@@ -54,6 +54,32 @@ wm_compose() {
     ( cd "$_wm_dir" && docker compose "$@" )
 }
 
+# wm_compose_stack <server_dir> <args...> — the same stack plus the HTTPS
+# overlay when it exists. Used for anything certificate-related.
+wm_compose_stack() {
+    _wm_dir="${1:?server_dir}"
+    shift
+    if [ -f "$_wm_dir/compose.tls.yaml" ]; then
+        wm_compose "$_wm_dir" -f compose.yaml -f compose.tls.yaml "$@"
+    else
+        wm_compose "$_wm_dir" "$@"
+    fi
+}
+
+# wm_compose_stack_log <server_dir> <args...> — quiet unless it fails.
+wm_compose_stack_log() {
+    _wm_server="${1:?server_dir}"
+    shift
+    _wm_log="${TMPDIR:-/tmp}/wristmind-compose-tls.$$.log"
+    if wm_compose_stack "$_wm_server" "$@" >"$_wm_log" 2>&1; then
+        rm -f "$_wm_log"
+        return 0
+    fi
+    tail -n 40 "$_wm_log" | sed 's/^/   /' >&2
+    rm -f "$_wm_log"
+    return 1
+}
+
 # Runs a command with a hard time limit when `timeout` is available.
 # Never used to wrap shell functions: `timeout` requires a real command.
 wm_run_long() {
@@ -393,13 +419,19 @@ wm_install() {
     fi
 
     # Persist the chosen public address and CORS origins even for an existing
-    # .env, so DNS-enrollment and browser access use the real address.
     # Persist an explicit address even for an existing .env, so enrollment
-    # links and browser access use the same one.
+    # links and browser access use the same one. A bare domain is stored as
+    # http:// until a certificate actually exists: claiming https:// before
+    # that would be a lie.
     if [ "$_wm_public_explicit" -eq 1 ]; then
-        wm_env_set "$_wm_server" WRISTMIND_PUBLIC_BASE_URL "$_wm_public"
-        wm_env_set "$_wm_server" WRISTMIND_CORS_ORIGINS "$(wm_env_merge_cors "$_wm_server" "$_wm_public")"
-        wm_ok "публичный адрес сохранён: $_wm_public"
+        _wm_store="$_wm_public"
+        if [ -n "$_wm_domain" ] && [ "$(wm_env_get "$_wm_server" WRISTMIND_TLS_ENABLED)" != "true" ]; then
+            _wm_store="http://$_wm_domain"
+        fi
+        [ -n "$_wm_domain" ] && wm_env_set "$_wm_server" WRISTMIND_DOMAIN "$_wm_domain"
+        wm_env_set "$_wm_server" WRISTMIND_PUBLIC_BASE_URL "$_wm_store"
+        wm_env_set "$_wm_server" WRISTMIND_CORS_ORIGINS "$(wm_env_merge_cors "$_wm_server" "$_wm_store")"
+        wm_ok "адрес сохранён: $_wm_store"
     fi
 
     if [ "$_wm_local" -eq 1 ]; then
@@ -413,7 +445,7 @@ wm_install() {
         wm_ok "веб-поиск включён (профиль search)"
     fi
 
-    _wm_profiles=""
+    _wm_profiles="--profile plain"
     [ "$_wm_with_search" -eq 1 ] && _wm_profiles="$_wm_profiles --profile search"
     [ "$_wm_with_telegram" -eq 1 ] && _wm_profiles="$_wm_profiles --profile telegram"
 
@@ -458,6 +490,130 @@ wm_install() {
     wm_access_block "$_wm_root" "$_wm_base"
 }
 
+# ---------------------------------------------------------------------------
+# TLS
+# ---------------------------------------------------------------------------
+# wm_tls_render <server_dir> <domain>
+# Renders the HTTPS nginx configuration from its template. The result is
+# deployment-specific and therefore not tracked by Git.
+wm_tls_render() {
+    _wm_server="${1:?server_dir}"
+    _wm_domain="${2:?domain}"
+    _wm_tpl="$_wm_server/deploy/nginx.tls.conf"
+    _wm_out="$_wm_server/tls/nginx.conf"
+    [ -f "$_wm_tpl" ] || { wm_err "нет шаблона $_wm_tpl"; return 1; }
+    mkdir -p "$_wm_server/tls"
+    sed "s|__WM_DOMAIN__|${_wm_domain}|g" "$_wm_tpl" >"$_wm_out"
+    printf '%s\n' "$_wm_out"
+}
+
+# wm_https_ok <domain> — probes the HTTPS endpoint without relying on public
+# DNS from inside this machine.
+wm_https_ok() {
+    _wm_domain="${1:?domain}"
+    if wm_have_cmd curl; then
+        curl -fsS -o /dev/null --max-time 8 \
+            --resolve "${_wm_domain}:443:127.0.0.1" \
+            "https://${_wm_domain}/health" >/dev/null 2>&1
+        return $?
+    fi
+    # No curl: at least confirm that TLS on 443 is up.
+    return 1
+}
+
+# wm_tls <repo_root> [--domain=HOST] [--email=ADDR] [--staging]
+# Requests an ACME certificate and turns on HTTPS. Honest about every refusal.
+wm_tls() {
+    _wm_root="${1:?repo_root}"
+    shift
+    _wm_domain_arg=""
+    _wm_email_arg=""
+    _wm_staging="false"
+    for _wm_arg in "$@"; do
+        case "$_wm_arg" in
+            --domain=*) _wm_domain_arg="${_wm_arg#--domain=}" ;;
+            --email=*) _wm_email_arg="${_wm_arg#--email=}" ;;
+            --staging) _wm_staging="true" ;;
+        esac
+    done
+
+    _wm_server="$(wm_server_dir "$_wm_root")"
+    wm_have_compose || { wm_err "Docker Compose недоступен."; return 1; }
+
+    _wm_domain="$(wm_env_get "$_wm_server" WRISTMIND_DOMAIN)"
+    [ -n "$_wm_domain_arg" ] && _wm_domain="$_wm_domain_arg"
+    [ -n "$_wm_domain" ] || {
+        wm_err "домен не задан. Выполните: ./wristmind tls --domain=example.com --email=you@example.com"
+        return 1
+    }
+    _wm_email="$(wm_env_get "$_wm_server" WRISTMIND_TLS_EMAIL)"
+    [ -n "$_wm_email_arg" ] && _wm_email="$_wm_email_arg"
+    [ -n "$_wm_email" ] || {
+        wm_err "нужен адрес для ACME. Добавьте --email=you@example.com"
+        return 1
+    }
+
+    # Nothing is written before every check passes: a refused request must
+    # leave the install exactly as it was.
+    wm_step "1/4 Проверка домена"
+    _wm_public_ip="$(wm_public_ip)"
+    _wm_dns="$(wm_domain_dns_status "$_wm_domain" "$_wm_public_ip")"
+    case "$_wm_dns" in
+        ok) wm_ok "DNS: $_wm_domain указывает на $_wm_public_ip" ;;
+        mismatch)
+            wm_err "DNS: $_wm_domain не указывает на $_wm_public_ip. Сертификат не будет выпущен."
+            return 1
+            ;;
+        unresolved)
+            wm_err "DNS: $_wm_domain не разрешается. Сначала настройте A-запись."
+            return 1
+            ;;
+        *) wm_wait "DNS не проверен: нет getent/dig/nslookup. Продолжаю." ;;
+    esac
+
+    wm_step "2/4 Конфигурация HTTPS"
+    _wm_rendered="$(wm_tls_render "$_wm_server" "$_wm_domain")" || return 1
+    wm_ok "конфигурация: $_wm_rendered"
+
+    # Port 80 must serve the ACME challenge. Bring up the HTTPS front end
+    # first: it is the one that listens on 80/443.
+    wm_step "3/4 Порт 80 и выпуск сертификата"
+    if ! wm_compose_stack_log "$_wm_server" --profile tls up -d nginx-tls; then
+        wm_err "не удалось поднять nginx-tls до выпуска сертификата."
+        return 1
+    fi
+    if ! wm_compose_stack "$_wm_server" --profile tls run --rm certbot; then
+        wm_err "certbot не выпустил сертификат. HTTPS не включён; HTTP-режим не изменён."
+        return 1
+    fi
+    wm_ok "сертификат получен для $_wm_domain"
+
+    wm_step "4/4 Включение HTTPS"
+    # nginx-tls started before the certificate existed; reload it so it reads
+    # the files, then stop the plain HTTP front end if it was running.
+    wm_compose_stack "$_wm_server" --profile tls exec -T nginx-tls nginx -s reload >/dev/null 2>&1 || true
+    wm_compose_stack_log "$_wm_server" stop nginx >/dev/null 2>&1 || true
+    wm_env_set "$_wm_server" WRISTMIND_DOMAIN "$_wm_domain"
+    wm_env_set "$_wm_server" WRISTMIND_TLS_EMAIL "$_wm_email"
+    wm_env_set "$_wm_server" WRISTMIND_TLS_STAGING "$_wm_staging"
+    wm_env_set "$_wm_server" WRISTMIND_TLS_ENABLED "true"
+    wm_env_set "$_wm_server" WRISTMIND_PUBLIC_BASE_URL "https://$_wm_domain"
+    wm_env_set "$_wm_server" WRISTMIND_CORS_ORIGINS "$(wm_env_merge_cors "$_wm_server" "https://$_wm_domain")"
+    wm_ok "HTTPS включён, plain HTTP остановлен"
+
+    if wm_https_ok "$_wm_domain"; then
+        wm_ok "HTTPS отвечает на https://$_wm_domain"
+    else
+        wm_wait "HTTPS пока не ответил; проверьте: curl -I https://$_wm_domain"
+    fi
+
+    printf '\n'
+    printf 'HTTPS включён: https://%s\n' "$_wm_domain"
+    printf 'Сертификат продлевается так:\n'
+    printf '  docker compose -f compose.yaml -f compose.tls.yaml --profile tls run --rm certbot renew\n'
+    printf 'Автоматическое продление пока не входит в установщик.\n'
+}
+
 # wm_access_block <repo_root> <local_base_url> — where the user goes next.
 wm_access_block() {
     _wm_root="${1:?repo_root}"
@@ -483,7 +639,6 @@ wm_access_block() {
         && [ "$_wm_portpart" != "$_wm_hostport" ]; then
         printf '  По сети:     http://%s:%s/main\n' "$_wm_host" "$_wm_portpart"
     fi
-    # Printed only when the public address is a real different (e.g. HTTPS) URL.
     # A public HTTPS address is what watches and remote clients use.
     case "$_wm_public" in
         https://*) printf '  Публичный:   %s\n' "$_wm_public" ;;
@@ -493,6 +648,9 @@ wm_access_block() {
             printf '\n  Локальный просмотр: данные в приватном томе, ключи не нужны.\n'
             ;;
     esac
+    if [ "$(wm_env_get "$_wm_server" WRISTMIND_TLS_ENABLED)" = "true" ] && [ -n "$_wm_domain" ]; then
+        printf '  Часы подключаются по адресу https://%s\n' "$_wm_domain"
+    fi
     printf '\n'
     # The vision says the bootstrap secret should never reach the user. Until
     # the /setup wizard exists there is no other way to enroll the first panel,

@@ -22,6 +22,11 @@ watch/app-side/private-config.js
 *.db
 tmp/
 
+# Per-deployment output: rendered HTTPS config, .env backups, mounted secrets.
+server/tls/
+server/secrets/
+server/.env.backup.*
+
 # Local IDE/build output and private attachments; never publish these with the source.
 .codex-remote-attachments/
 android/.kotlin/

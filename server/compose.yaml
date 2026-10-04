@@ -109,12 +109,19 @@ services:
         required: false
 
   nginx:
+    # Plain HTTP is a mode, not the permanent state: with a certificate the
+    # `tls` overlay brings up `nginx-tls` instead. The installer selects this
+    # profile, and stopping it is what switches the install to HTTPS.
+    profiles: ["plain"]
     image: nginx:1.28-alpine
     restart: unless-stopped
     ports:
       - "${WRISTMIND_HTTP_PORT:-8080}:8080"
     volumes:
       - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # ACME webroot: shared with the one-shot `certbot` service so a
+      # certificate can be requested while this server is already running.
+      - tls_webroot:/var/www/acme
     depends_on:
       api:
         condition: service_healthy
@@ -256,6 +263,10 @@ services:
 volumes:
   postgres_data:
   private_files:
+  # ACME challenge files and issued certificates. Created by the `certbot`
+  # service; read by the `tls` profile of nginx.
+  tls_webroot:
+  tls_certs:
 
 networks:
   default:

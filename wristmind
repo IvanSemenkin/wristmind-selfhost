@@ -140,15 +140,23 @@ wm_manage_menu() {
 
 wm_manage_health() {
     _wm_port="$(wm_http_port "$WM_SERVER_DIR")"
+    _wm_tls="$(wm_env_get "$WM_SERVER_DIR" WRISTMIND_TLS_ENABLED)"
+    _wm_domain="$(wm_env_get "$WM_SERVER_DIR" WRISTMIND_DOMAIN)"
     printf '\n'
-    if wm_http_ok "http://127.0.0.1:${_wm_port}/health"; then
+    if [ "$_wm_tls" = "true" ] && [ -n "$_wm_domain" ]; then
+        if wm_https_ok "$_wm_domain"; then
+            wm_ok "HTTPS отвечает: https://$_wm_domain/health"
+        else
+            wm_err "HTTPS не отвечает: https://$_wm_domain/health"
+        fi
+    elif wm_http_ok "http://127.0.0.1:${_wm_port}/health"; then
         wm_ok "API отвечает на http://127.0.0.1:${_wm_port}/health"
     else
         wm_err "API не отвечает на http://127.0.0.1:${_wm_port}/health"
     fi
     if wm_have_compose; then
         printf '\n%s\n' 'Контейнеры:'
-        wm_compose "$WM_SERVER_DIR" ps 2>&1 | sed 's/^/  /'
+        wm_compose "$WM_SERVER_DIR" ps -a 2>&1 | sed 's/^/  /'
     fi
 }
 
@@ -177,6 +185,30 @@ wm_manage_access() {
     wm_access_block "$WM_ROOT" "http://127.0.0.1:${_wm_port}"
 }
 
+# Interactive entry for "Домен и HTTPS": asks only for what is missing.
+wm_manage_tls_gate() {
+    printf '\n'
+    _wm_domain="$(wm_env_get "$WM_SERVER_DIR" WRISTMIND_DOMAIN)"
+    _wm_email="$(wm_env_get "$WM_SERVER_DIR" WRISTMIND_TLS_EMAIL)"
+    if [ -z "$_wm_domain" ]; then
+        printf '\nДомен (например watch.example.com): '
+        IFS= read -r _wm_domain || return 0
+    fi
+    if [ -z "$_wm_domain" ]; then
+        wm_err "домен не задан"
+        return 0
+    fi
+    if [ -z "$_wm_email" ]; then
+        printf 'Адрес для ACME (Let'"'"'s Encrypt): '
+        IFS= read -r _wm_email || return 0
+    fi
+    if [ -z "$_wm_email" ]; then
+        wm_err "адрес не задан"
+        return 0
+    fi
+    wm_tls "$WM_ROOT" "--domain=$_wm_domain" "--email=$_wm_email"
+}
+
 wm_manage_menu_loop() {
     _wm_again=1
     while [ "$_wm_again" -eq 1 ]; do
@@ -189,7 +221,7 @@ wm_manage_menu_loop() {
         case "$_wm_choice" in
             1) wm_not_implemented "Обновить до последней версии" ;;
             2) wm_manage_health ;;
-            3) wm_not_implemented "Домен и HTTPS" ;;
+            3) wm_manage_tls_gate ;;
             4) wm_not_implemented "Ключи и провайдеры" ;;
             5) wm_not_implemented "Резервные копии" ;;
             6) wm_manage_restart ;;
@@ -265,6 +297,20 @@ wm_cmd_status() {
     printf 'Версия:    %s\n' "$(wm_version_label "$WM_ROOT")"
     printf 'Порт:      %s\n' "$(wm_http_port "$WM_SERVER_DIR")"
     printf '.env:      %s\n' "$(wm_env_file "$WM_SERVER_DIR")"
+    _wm_domain="$(wm_env_get "$WM_SERVER_DIR" WRISTMIND_DOMAIN)"
+    if [ -n "$_wm_domain" ]; then
+        _wm_tls="$(wm_env_get "$WM_SERVER_DIR" WRISTMIND_TLS_ENABLED)"
+        if [ "$_wm_tls" = "true" ]; then
+            printf 'Домен:     %s · HTTPS включён\n' "$_wm_domain"
+        else
+            printf 'Домен:     %s · HTTPS не включён\n' "$_wm_domain"
+        fi
+    fi
+}
+
+wm_cmd_tls() {
+    shift
+    wm_tls "$WM_ROOT" "$@"
 }
 
 wm_cmd_help() {
@@ -278,6 +324,9 @@ WristMind — установка и управление сервером.
   ./wristmind install --local     локальный просмотр: SQLite, моки, без домена
   ./wristmind install --with-search    дополнительно поднять приватный SearXNG
   ./wristmind install --with-telegram  дополнительно поднять Telegram-бота
+  ./wristmind tls --domain=example.com --email=you@example.com
+                                  выпустить сертификат и включить HTTPS
+  ./wristmind tls ... --staging   проверка на тестовом ACME-контуре
   ./wristmind check               проверить требования
   ./wristmind status              показать определённое состояние
   ./wristmind version             версия этого чекаута
@@ -298,6 +347,7 @@ wm_main() {
             fi
             ;;
         install) wm_cmd_install "$@" ;;
+        tls) wm_cmd_tls "$@" ;;
         check) wm_cmd_check ;;
         status) wm_cmd_status ;;
         version) printf '%s\n' "$(wm_version_label "$WM_ROOT")" ;;

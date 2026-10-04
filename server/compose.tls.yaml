@@ -1,0 +1,77 @@
+# HTTPS overlay for WristMind.
+#
+# Applied by `./wristmind tls`, not by hand:
+#   docker compose -f compose.yaml -f compose.tls.yaml --profile tls up -d
+#
+# It does two things:
+#   * keeps a one-shot `certbot` service that requests and renews the
+#     certificate through the ACME webroot already served on port 80;
+#   * replaces the plain-HTTP nginx (which lives in the `plain` profile) with
+#     `nginx-tls`, which terminates TLS using the rendered
+#     server/tls/nginx.conf.
+#
+# `nginx-tls` uses its own service name on purpose: Compose merges mounts
+# additively, so the config file of the core nginx cannot be swapped by an
+# override without also duplicating it. A separate service keeps the plain
+# HTTP mode untouched, and the `plain` profile is simply left off.
+name: ${WRISTMIND_COMPOSE_PROJECT:-wristmind}
+
+services:
+  certbot:
+    profiles: ["tls"]
+    image: certbot/certbot:latest
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Compose interpolates this file even with the profile off, so the
+      # variables have harmless defaults here. `./wristmind tls` refuses to
+      # start this service without a real address and email.
+      WRISTMIND_DOMAIN: ${WRISTMIND_DOMAIN:-}
+      WRISTMIND_TLS_EMAIL: ${WRISTMIND_TLS_EMAIL:-}
+      WRISTMIND_TLS_STAGING: ${WRISTMIND_TLS_STAGING:-false}
+    volumes:
+      - tls_certs:/etc/letsencrypt
+      - tls_webroot:/var/www/acme
+    entrypoint:
+      - sh
+      - -ec
+      - >-
+        [ -n "$${WRISTMIND_DOMAIN}" ] || {
+          echo "WRISTMIND_DOMAIN is empty: run ./wristmind tls --domain=<host> --email=<address>" >&2;
+          exit 1;
+        };
+        [ -n "$${WRISTMIND_TLS_EMAIL}" ] || {
+          echo "WRISTMIND_TLS_EMAIL is empty: ACME requires a contact address" >&2;
+          exit 1;
+        };
+        if [ "$${WRISTMIND_TLS_STAGING}" = "true" ]; then
+          staging="--staging";
+        else
+          staging="";
+        fi;
+        exec certbot certonly
+        --webroot --webroot-path /var/www/acme
+        --non-interactive --agree-tos --keep-until-expiring
+        --email "$${WRISTMIND_TLS_EMAIL}"
+        $$staging
+        -d "$${WRISTMIND_DOMAIN}"
+
+  nginx-tls:
+    profiles: ["tls"]
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./tls/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - tls_certs:/etc/letsencrypt:ro
+      - tls_webroot:/var/www/acme
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  tls_certs:
+  tls_webroot:
