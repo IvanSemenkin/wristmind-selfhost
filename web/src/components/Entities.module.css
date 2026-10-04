@@ -1,0 +1,193 @@
+/* ---- Mode identity -------------------------------------------------------- */
+
+.modeDot {
+  display: inline-block;
+  border-radius: var(--radius-full);
+  background: var(--text-faint);
+  flex: none;
+}
+
+.modeDot[data-mode-color] {
+  background: var(--mode);
+}
+
+.modeDot[data-size='sm'] {
+  width: 6px;
+  height: 6px;
+}
+.modeDot[data-size='md'] {
+  width: 8px;
+  height: 8px;
+}
+.modeDot[data-size='lg'] {
+  width: 10px;
+  height: 10px;
+}
+
+.modeBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-4) var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  max-width: 100%;
+  min-width: 0;
+}
+
+.modeBadge[data-size='md'] {
+  font-size: var(--text-base);
+}
+
+.modeBadge[data-mode-color] {
+  background: var(--mode-soft);
+  border-color: var(--mode-border);
+  color: var(--text-primary);
+}
+
+.modeBadge[data-interactive]:hover {
+  border-color: var(--mode);
+}
+
+.modeBadgeName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.quickBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.quickBadge .modeDot {
+  background: var(--text-faint);
+}
+
+/* ---- Models --------------------------------------------------------------- */
+
+.modelIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  flex: none;
+}
+
+.modelIcon > svg {
+  width: 13px;
+  height: 13px;
+}
+
+.modelIcon[data-local] {
+  color: var(--warning-text);
+}
+
+.modelLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.modelName {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modelProvider {
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--text-faint);
+}
+
+/* ---- Devices -------------------------------------------------------------- */
+
+.deviceIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-muted);
+  background: var(--bg-inset);
+  color: var(--text-muted);
+  flex: none;
+}
+
+.deviceIcon > svg {
+  width: 15px;
+  height: 15px;
+}
+
+.deviceIcon[data-type='watch'] {
+  color: var(--accent-text);
+}
+
+.deviceIcon[data-type='phone'] {
+  color: var(--success-text);
+}
+
+.serviceIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--text-faint);
+  flex: none;
+}
+
+.serviceIcon > svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* ---- Meta row ------------------------------------------------------------- */
+
+.metaRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.metaItem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.metaItem > svg {
+  width: 13px;
+  height: 13px;
+  color: var(--text-faint);
+  flex: none;
+}
+
+.sep {
+  width: 1px;
+  height: 11px;
+  background: var(--border-default);
+  flex: none;
+}

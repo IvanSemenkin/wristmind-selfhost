@@ -1,0 +1,204 @@
+.wrap {
+  width: 100%;
+  min-width: 0;
+}
+
+/* ---- Desktop table -------------------------------------------------------- */
+
+.table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+}
+
+.th {
+  text-align: left;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-muted);
+  padding: 0 var(--space-7) var(--space-5);
+  border-bottom: 1px solid var(--border-default);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.th[data-align='right'],
+.td[data-align='right'] {
+  text-align: right;
+}
+
+.th[data-align='center'],
+.td[data-align='center'] {
+  text-align: center;
+}
+
+.actionsHead {
+  width: 40px;
+}
+
+.tr {
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.tr[data-clickable] {
+  cursor: pointer;
+}
+
+.tr:hover {
+  background: var(--bg-hover);
+}
+
+.tr[data-active] {
+  background: var(--bg-selected);
+}
+
+.td {
+  padding: var(--space-6) var(--space-7);
+  border-bottom: 1px solid var(--border-muted);
+  font-size: var(--text-base);
+  color: var(--text-secondary);
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tr:last-child .td {
+  border-bottom: none;
+}
+
+.td:first-child {
+  border-top-left-radius: var(--radius-sm);
+}
+
+.actionsCell {
+  width: 40px;
+  padding-inline: var(--space-4);
+  text-align: right;
+  overflow: visible;
+}
+
+@media (min-width: 1200px) {
+  .th[data-hide-below='lg'],
+  .td[data-hide-below='lg'] {
+    display: table-cell;
+  }
+}
+
+@media (max-width: 1199px) {
+  .th[data-hide-below='lg'],
+  .td[data-hide-below='lg'] {
+    display: none;
+  }
+}
+
+@media (max-width: 1023px) {
+  .th[data-hide-below='md'],
+  .td[data-hide-below='md'] {
+    display: none;
+  }
+}
+
+/* ---- Loading -------------------------------------------------------------- */
+
+.loadingRows {
+  display: flex;
+  flex-direction: column;
+}
+
+.loadingRow {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) 80px 80px;
+  gap: var(--space-7);
+  align-items: center;
+  padding: var(--space-6) var(--space-7);
+  border-bottom: 1px solid var(--border-muted);
+  min-height: 45px;
+}
+
+/* ---- Mobile cards --------------------------------------------------------- */
+
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-2) 0;
+}
+
+.card {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+
+.card[data-active] {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.cardMain {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: var(--space-6) var(--space-5) var(--space-6) var(--space-6);
+}
+
+.cardPrimary {
+  flex: 1;
+  min-width: 0;
+}
+
+.clickable {
+  cursor: pointer;
+}
+
+.cardActions {
+  flex: none;
+  margin: -4px -2px 0 0;
+}
+
+.cardMeta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-6) var(--space-6);
+  border-top: 1px solid var(--border-muted);
+  background: color-mix(in srgb, var(--bg-inset) 60%, transparent);
+  margin: 0;
+}
+
+.cardMetaRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-6);
+  min-width: 0;
+}
+
+.cardMetaLabel {
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+  flex: none;
+}
+
+.cardMetaValue {
+  margin: 0;
+  font-size: var(--text-base);
+  color: var(--text-secondary);
+  text-align: right;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Expand the primary cell to a full-height tap target without shifting layout. */
+@media (max-width: 860px) {
+  .cardPrimary {
+    padding-block: 7px;
+    margin-block: -7px;
+  }
+
+  .cardMetaValue {
+    text-align: right;
+  }
+}

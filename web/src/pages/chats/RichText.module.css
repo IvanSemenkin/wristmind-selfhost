@@ -1,0 +1,363 @@
+/* =============================================================================
+   Assistant answer typography.
+
+   Every rule is scoped to this module except the intentional `code` defaults
+   below, which the rest of the console (diagnostics, dialogs) relies on.
+   ========================================================================== */
+
+.paragraph {
+  margin: 0 0 var(--space-5);
+  font-size: var(--text-md);
+  line-height: var(--leading-relaxed);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.paragraph:last-child {
+  margin-bottom: 0;
+}
+
+/* ---- Headings ----------------------------------------------------------- */
+
+.heading1,
+.heading2,
+.heading3,
+.heading4 {
+  margin: var(--space-8) 0 var(--space-5);
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-snug);
+  overflow-wrap: anywhere;
+}
+
+.heading1:first-child,
+.heading2:first-child,
+.heading3:first-child,
+.heading4:first-child {
+  margin-top: 0;
+}
+
+.heading1 {
+  font-size: var(--text-2xl);
+  letter-spacing: var(--tracking-tight);
+}
+
+.heading2 {
+  font-size: var(--text-xl);
+  letter-spacing: var(--tracking-tight);
+}
+
+.heading3 {
+  font-size: var(--text-lg);
+}
+
+.heading4 {
+  font-size: var(--text-md);
+  color: var(--text-secondary);
+}
+
+/* ---- Lists -------------------------------------------------------------- */
+
+.list {
+  margin: 0 0 var(--space-5);
+  padding-left: var(--space-9);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  font-size: var(--text-md);
+  line-height: var(--leading-relaxed);
+  color: var(--text-primary);
+}
+
+.list:last-child {
+  margin-bottom: 0;
+}
+
+.list .list {
+  margin: var(--space-3) 0 0;
+}
+
+.list li {
+  position: relative;
+  overflow-wrap: anywhere;
+}
+
+.list li::marker {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.listItemBody {
+  min-width: 0;
+}
+
+.listItemBody > *:last-child {
+  margin-bottom: 0;
+}
+
+.taskItem {
+  list-style: none;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+.taskBox {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 3px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-xs);
+  line-height: 1;
+  color: var(--accent-contrast);
+}
+
+.taskBox[data-checked='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.taskBox[data-checked='false'] {
+  background: var(--bg-inset);
+}
+
+/* ---- Quotes and dividers ------------------------------------------------ */
+
+.blockquote {
+  margin: 0 0 var(--space-5);
+  padding: var(--space-4) var(--space-6);
+  border-left: 2px solid var(--accent-border);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+}
+
+.blockquote > *:last-child {
+  margin-bottom: 0;
+}
+
+.divider {
+  margin: var(--space-7) 0;
+  border: 0;
+  border-top: 1px solid var(--border-default);
+}
+
+/* ---- Inline spans ------------------------------------------------------- */
+
+.strong {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+
+.inlineCode {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-xs);
+  padding: 1px 4px;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.link {
+  color: var(--accent-text);
+  text-decoration: none;
+  border-bottom: 1px solid var(--accent-border);
+  overflow-wrap: anywhere;
+}
+
+.link:hover {
+  color: var(--accent-hover);
+}
+
+.image {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 1px var(--space-4);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+a.image:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-border);
+}
+
+.citation {
+  font-size: 0.72em;
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-xs);
+  padding: 0 3px;
+  margin-left: 2px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  top: -0.35em;
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-xs);
+  padding: 1px 4px;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+/* ---- Code blocks -------------------------------------------------------- */
+
+.codeBlock {
+  margin: 0 0 var(--space-5);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+
+.codeHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-6);
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.codeLang {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+.copyButton {
+  flex: none;
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-xs);
+  padding: 2px var(--space-4);
+  cursor: pointer;
+}
+
+.copyButton:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.codePre {
+  margin: 0;
+  padding: var(--space-6);
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+/* Code keeps the block background: the global inline `code` chrome is removed. */
+.codePre code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  color: var(--text-primary);
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+/* ---- Tables ------------------------------------------------------------- */
+
+.tableWrap {
+  margin: 0 0 var(--space-5);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+}
+
+.table th,
+.table td {
+  padding: var(--space-4) var(--space-6);
+  text-align: left;
+  vertical-align: top;
+  min-width: 88px;
+  border-bottom: 1px solid var(--border-muted);
+  overflow-wrap: anywhere;
+}
+
+.table thead th {
+  background: var(--bg-surface-raised);
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.table th[data-align='center'],
+.table td[data-align='center'] {
+  text-align: center;
+}
+
+.table th[data-align='right'],
+.table td[data-align='right'] {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Math --------------------------------------------------------------- */
+
+.mathInline {
+  white-space: nowrap;
+}
+
+.mathBlock {
+  display: block;
+  margin: var(--space-5) 0;
+  padding: var(--space-4) var(--space-2);
+  overflow-x: auto;
+  max-width: 100%;
+  text-align: center;
+}
+
+.mathFallback {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-xs);
+  padding: 1px 4px;
+  overflow-wrap: anywhere;
+}
+
+/* KaTeX display math should not add its own outer margins inside our blocks. */
+.mathBlock :global(.katex-display) {
+  margin: 0;
+}

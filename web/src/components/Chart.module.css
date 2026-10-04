@@ -1,0 +1,242 @@
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+  min-width: 0;
+}
+
+.chartHead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-8);
+  flex-wrap: wrap;
+}
+
+.chartSummary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.chartSummaryValue {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-tighter);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.chartSummaryLabel {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.legend {
+  display: flex;
+  align-items: center;
+  gap: var(--space-7);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.legendSwatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--chart-bar);
+}
+
+.legendSwatch[data-kind='error'] {
+  background: var(--danger);
+}
+
+.plot {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.gridLines {
+  position: absolute;
+  inset: 0 0 20px 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  pointer-events: none;
+}
+
+.gridLines > span {
+  height: 1px;
+  background: var(--chart-grid);
+}
+
+.bars {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  height: 100%;
+  min-width: 0;
+}
+
+.bar {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: default;
+}
+
+.barTrack {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  min-height: 0;
+}
+
+.barFill {
+  position: relative;
+  width: 100%;
+  max-width: 26px;
+  border-radius: var(--radius-xs) var(--radius-xs) 2px 2px;
+  background: var(--chart-bar);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    height var(--duration-slow) var(--ease-out);
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+}
+
+.bar:hover .barFill,
+.bar[data-active] .barFill {
+  background: color-mix(in srgb, var(--accent) 45%, var(--chart-bar));
+}
+
+.barErrors {
+  width: 100%;
+  background: var(--danger);
+  border-radius: 0;
+  opacity: 0.85;
+}
+
+.barLabel {
+  height: 16px;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-align: center;
+  overflow: hidden;
+}
+
+/* ---- Ranked bars ---------------------------------------------------------- */
+
+.ranked {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+}
+
+.rankedRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.rankedHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-6);
+  min-width: 0;
+}
+
+.rankedLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  font-weight: var(--weight-medium);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rankedDot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  flex: none;
+}
+
+.rankedValue {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.rankedTrack {
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--bg-skeleton);
+  overflow: hidden;
+}
+
+.rankedFill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width var(--duration-slow) var(--ease-out);
+}
+
+.rankedMeta {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+/* ---- Sparkline ------------------------------------------------------------ */
+
+.sparkline {
+  color: var(--accent);
+  flex: none;
+}
+
+.sparkline[data-tone='success'] {
+  color: var(--success);
+}
+
+.sparkline[data-tone='danger'] {
+  color: var(--danger);
+}
+
+@media (max-width: 860px) {
+  .barFill {
+    max-width: none;
+  }
+
+  .legend {
+    gap: var(--space-6);
+  }
+}

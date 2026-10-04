@@ -1,0 +1,192 @@
+name: wristmind-v2
+
+services:
+  route-fix:
+    image: alpine:3.22
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - >-
+        apk add --no-cache iproute2 iptables ipset >/dev/null &&
+        while true; do
+          ip rule add priority 8972 to "$${WRISTMIND_TUNNEL_HOST:-88.151.114.29}" lookup main 2>/dev/null || true;
+          ip rule del priority 8973 2>/dev/null || true;
+          ip rule add priority 8973 fwmark 0x1 lookup "$${WRISTMIND_OPENROUTER_VPN_TABLE:-51821}" 2>/dev/null || true;
+          ipset create wristmind_openrouter hash:ip -exist;
+          ipset flush wristmind_openrouter;
+          for address in $$(getent ahostsv4 openrouter.ai | awk '{print $$1}' | sort -u); do ipset add wristmind_openrouter "$$address" -exist; done;
+          ipset create wristmind_telegram hash:ip -exist;
+          ipset flush wristmind_telegram;
+          for address in $$(getent ahostsv4 api.telegram.org | awk '{print $$1}' | sort -u); do ipset add wristmind_telegram "$$address" -exist; done;
+          iptables -t mangle -C PREROUTING -s 172.30.40.0/24 -m set --match-set wristmind_openrouter dst -j MARK --set-mark 0x1 2>/dev/null || iptables -t mangle -A PREROUTING -s 172.30.40.0/24 -m set --match-set wristmind_openrouter dst -j MARK --set-mark 0x1;
+          iptables -t nat -C POSTROUTING -s 172.30.40.0/24 -m set --match-set wristmind_openrouter dst -o "$${WRISTMIND_OPENROUTER_VPN_INTERFACE:-awg-dm}" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 172.30.40.0/24 -m set --match-set wristmind_openrouter dst -o "$${WRISTMIND_OPENROUTER_VPN_INTERFACE:-awg-dm}" -j MASQUERADE;
+          iptables -t mangle -C PREROUTING -s 172.30.40.0/24 -m set --match-set wristmind_telegram dst -j MARK --set-mark 0x1 2>/dev/null || iptables -t mangle -A PREROUTING -s 172.30.40.0/24 -m set --match-set wristmind_telegram dst -j MARK --set-mark 0x1;
+          iptables -t nat -C POSTROUTING -s 172.30.40.0/24 -m set --match-set wristmind_telegram dst -o "$${WRISTMIND_OPENROUTER_VPN_INTERFACE:-awg-dm}" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 172.30.40.0/24 -m set --match-set wristmind_telegram dst -o "$${WRISTMIND_OPENROUTER_VPN_INTERFACE:-awg-dm}" -j MASQUERADE;
+          ip rule add priority 8974 from 172.30.41.0/24 lookup main 2>/dev/null || true;
+          ip rule add priority 8975 to 172.30.40.0/24 lookup main 2>/dev/null || true;
+          ip rule add priority 8976 from 172.30.40.0/24 lookup main 2>/dev/null || true;
+          sleep 300;
+        done
+
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wristmind
+      POSTGRES_USER: wristmind
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wristmind -d wristmind"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    # Builds run on the host network on purpose: this host forces egress
+    # through the AmneziaWG VPN (MTU 1280), while the default bridge is 1500,
+    # so packages fetched from the build container are silently dropped.
+    build:
+      context: .
+      network: host
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      WRISTMIND_DATABASE_URL: postgresql+asyncpg://wristmind:${POSTGRES_PASSWORD}@db:5432/wristmind
+      WRISTMIND_STORAGE_DIR: /data/private
+      # The host key is mounted read-only below; applications inside the container
+      # must use the container path rather than the host path from .env.
+      WRISTMIND_FIREBASE_CREDENTIALS_PATH: /run/secrets/firebase-admin.json
+    volumes:
+      - private_files:/data/private
+      - /home/ivan/.config/wristmind/firebase-admin.json:/run/secrets/firebase-admin.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET}
+    volumes:
+      - ./deploy/searxng:/etc/searxng:ro
+    networks:
+      - search
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  worker:
+    build:
+      context: .
+      network: host
+    command: ["python", "-m", "wristmind_server.worker"]
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      WRISTMIND_DATABASE_URL: postgresql+asyncpg://wristmind:${POSTGRES_PASSWORD}@db:5432/wristmind
+      WRISTMIND_STORAGE_DIR: /data/private
+      WRISTMIND_FIREBASE_CREDENTIALS_PATH: /run/secrets/firebase-admin.json
+      WRISTMIND_SEARXNG_URL: http://searxng:8080
+    volumes:
+      - private_files:/data/private
+      - /home/ivan/.config/wristmind/firebase-admin.json:/run/secrets/firebase-admin.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      searxng:
+        condition: service_started
+    networks:
+      - default
+      - search
+
+  telegram-bot:
+    image: wristmind-v2-api
+    command: ["python", "-m", "wristmind_server.telegram_polling"]
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      WRISTMIND_DATABASE_URL: postgresql+asyncpg://wristmind:${POSTGRES_PASSWORD}@db:5432/wristmind
+      WRISTMIND_STORAGE_DIR: /data/private
+    volumes:
+      - private_files:/data/private
+    depends_on:
+      db:
+        condition: service_healthy
+      route-fix:
+        condition: service_started
+
+  nginx:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    ports:
+      - "80:8080"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      route-fix:
+        condition: service_started
+
+  vps-tunnel:
+    image: alpine:3.22
+    profiles: ["public-gateway"]
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      WRISTMIND_TUNNEL_HOST: ${WRISTMIND_TUNNEL_HOST:-88.151.114.29}
+      WRISTMIND_TUNNEL_PORT: ${WRISTMIND_TUNNEL_PORT:-22}
+      WRISTMIND_TUNNEL_USER: ${WRISTMIND_TUNNEL_USER:-root}
+      WRISTMIND_TUNNEL_REMOTE_PORT: ${WRISTMIND_TUNNEL_REMOTE_PORT:-18080}
+      WRISTMIND_TUNNEL_LOCAL_PORT: ${WRISTMIND_TUNNEL_LOCAL_PORT:-80}
+    volumes:
+      - ${WRISTMIND_TUNNEL_KEY_PATH:-/home/ivan/.ssh/wristmind-vps-tunnel}:/root/.ssh/id_ed25519:ro
+      - ${WRISTMIND_TUNNEL_KNOWN_HOSTS_PATH:-/home/ivan/.ssh/known_hosts}:/root/.ssh/known_hosts:ro
+    command:
+      - sh
+      - -ec
+      - >-
+        apk add --no-cache openssh-client >/dev/null &&
+        exec ssh -N
+        -i /root/.ssh/id_ed25519
+        -o BatchMode=yes
+        -o ExitOnForwardFailure=yes
+        -o ServerAliveInterval=20
+        -o ServerAliveCountMax=3
+        -o StrictHostKeyChecking=yes
+        -p "$${WRISTMIND_TUNNEL_PORT}"
+        -R "127.0.0.1:$${WRISTMIND_TUNNEL_REMOTE_PORT}:127.0.0.1:$${WRISTMIND_TUNNEL_LOCAL_PORT}"
+        "$${WRISTMIND_TUNNEL_USER}@$${WRISTMIND_TUNNEL_HOST}"
+
+volumes:
+  postgres_data:
+  private_files:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.40.0/24
+  search:
+    ipam:
+      config:
+        - subnet: 172.30.41.0/24

@@ -1,0 +1,17 @@
+[Unit]
+Description=WristMind web control panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/wristmind-web/web
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=18786
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

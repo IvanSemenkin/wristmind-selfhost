@@ -1,0 +1,44 @@
+.anchor {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* Rendered in a portal so it can be clamped to the viewport. */
+.bubble {
+  position: fixed;
+  z-index: var(--z-tooltip);
+  padding: var(--space-3) var(--space-5);
+  border-radius: var(--radius-sm);
+  background: var(--text-primary);
+  color: var(--bg-surface);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: 1.4;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  box-shadow: var(--shadow-md);
+  animation: tooltipIn var(--duration-fast) var(--ease-out);
+}
+
+@keyframes tooltipIn {
+  from {
+    opacity: 0;
+    transform: translateY(var(--tooltip-shift, 2px));
+  }
+}
+
+.bubble[data-side='bottom'] {
+  --tooltip-shift: -2px;
+}
+
+/* Touch devices have no hover: skip tooltips entirely rather than showing a
+   bubble that competes with the tap. Accessible names stay on the elements. */
+@media (hover: none) {
+  .bubble {
+    display: none;
+  }
+}

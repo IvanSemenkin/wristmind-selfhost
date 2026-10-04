@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only override of src/main/res/xml/network_security_config.xml.
+
+  A local development backend is plain HTTP on the LAN, which the release policy
+  deliberately forbids. Only the debug APK permits cleartext, and only for the
+  development hosts listed here; release builds stay cleartext-free.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Local dev backend used by the physical watch. -->
+        <domain includeSubdomains="false">192.168.0.218</domain>
+        <!-- Host loopback as seen from the Android emulator. -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

@@ -1,0 +1,131 @@
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-9);
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-height: 46vh;
+  overflow-y: auto;
+  padding-right: var(--space-2);
+  margin-right: calc(var(--space-2) * -1);
+}
+
+.option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-6);
+  padding: var(--space-6) var(--space-7);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  text-align: left;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out);
+  min-width: 0;
+}
+
+.option:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+.option[data-active] {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.option[data-mode-color][data-active] {
+  border-color: var(--mode-border);
+  background: var(--mode-soft);
+}
+
+.optionIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-muted);
+  color: var(--text-muted);
+  flex: none;
+}
+
+.optionIcon > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.optionIcon[data-quick] {
+  color: var(--warning-text);
+}
+
+.optionIcon[data-mode-color] {
+  background: transparent;
+  border-color: transparent;
+}
+
+.optionBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.optionHead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.optionName {
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+}
+
+.optionTag {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-muted);
+}
+
+.optionDescription {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  line-height: var(--leading-snug);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.optionMeta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+}
+
+.optionMeta > svg {
+  width: 12px;
+  height: 12px;
+}
+
+.optionMetaWarning {
+  color: var(--warning-text);
+}

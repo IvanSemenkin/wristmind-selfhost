@@ -1,0 +1,379 @@
+/* ---- Spinner -------------------------------------------------------------- */
+
+.spinner {
+  display: inline-block;
+  border-radius: var(--radius-full);
+  border: 1.6px solid currentColor;
+  border-top-color: transparent;
+  border-right-color: transparent;
+  animation: spin 620ms linear infinite;
+  flex: none;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- Skeleton ------------------------------------------------------------- */
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-skeleton) 0%,
+    color-mix(in srgb, var(--bg-skeleton) 45%, transparent) 50%,
+    var(--bg-skeleton) 100%
+  );
+  background-size: 220% 100%;
+  border-radius: var(--radius-sm);
+  animation: shimmer 1.5s var(--ease-in-out) infinite;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 140% 0;
+  }
+  to {
+    background-position: -40% 0;
+  }
+}
+
+.skeletonRows {
+  display: flex;
+  flex-direction: column;
+}
+
+.skeletonRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-7);
+  border-bottom: 1px solid var(--border-muted);
+  min-height: 44px;
+}
+
+.skeletonRow:last-child {
+  border-bottom: none;
+}
+
+/* ---- Progress ------------------------------------------------------------- */
+
+.progress {
+  width: 100%;
+  background: var(--bg-skeleton);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.progress[data-size='sm'] {
+  height: 3px;
+}
+
+.progress[data-size='md'] {
+  height: 5px;
+}
+
+.progressFill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  transition: width var(--duration-slow) var(--ease-out);
+}
+
+.progress[data-tone='success'] .progressFill {
+  background: var(--success);
+}
+
+.progress[data-tone='danger'] .progressFill {
+  background: var(--danger);
+}
+
+/* ---- Status dot ----------------------------------------------------------- */
+
+.dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  flex: none;
+  background: var(--text-faint);
+}
+
+.dot[data-tone='accent'] {
+  background: var(--accent);
+}
+.dot[data-tone='success'] {
+  background: var(--success);
+}
+.dot[data-tone='warning'] {
+  background: var(--warning);
+}
+.dot[data-tone='danger'] {
+  background: var(--danger);
+}
+.dot[data-tone='info'] {
+  background: var(--info);
+}
+
+.dot[data-pulse] {
+  box-shadow: 0 0 0 0 currentColor;
+  animation: pulse 1.8s var(--ease-out) infinite;
+}
+
+.dot[data-tone='success'][data-pulse] {
+  color: color-mix(in srgb, var(--success) 60%, transparent);
+}
+.dot[data-tone='warning'][data-pulse] {
+  color: color-mix(in srgb, var(--warning) 60%, transparent);
+}
+.dot[data-tone='danger'][data-pulse] {
+  color: color-mix(in srgb, var(--danger) 60%, transparent);
+}
+.dot[data-tone='accent'][data-pulse] {
+  color: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 currentColor;
+  }
+  70% {
+    box-shadow: 0 0 0 4px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+/* ---- Badge ---------------------------------------------------------------- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  border-radius: var(--radius-sm);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+  border: 1px solid transparent;
+  line-height: 1;
+}
+
+.badge[data-size='sm'] {
+  height: 18px;
+  padding-inline: var(--space-3);
+  font-size: var(--text-xs);
+}
+
+.badge[data-size='md'] {
+  height: 20px;
+  padding-inline: var(--space-4);
+  font-size: var(--text-sm);
+}
+
+.badgeIcon {
+  display: inline-flex;
+  flex: none;
+}
+
+.badgeIcon > svg {
+  width: 12px;
+  height: 12px;
+}
+
+.badge[data-variant='soft'][data-tone='neutral'] {
+  background: var(--neutral-soft);
+  color: var(--text-secondary);
+}
+.badge[data-variant='soft'][data-tone='accent'] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.badge[data-variant='soft'][data-tone='success'] {
+  background: var(--success-soft);
+  color: var(--success-text);
+}
+.badge[data-variant='soft'][data-tone='warning'] {
+  background: var(--warning-soft);
+  color: var(--warning-text);
+}
+.badge[data-variant='soft'][data-tone='danger'] {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.badge[data-variant='soft'][data-tone='info'] {
+  background: var(--info-soft);
+  color: var(--info-text);
+}
+
+.badge[data-variant='outline'] {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: var(--border-default);
+}
+
+.badge[data-variant='outline'][data-tone='success'] {
+  color: var(--success-text);
+  border-color: var(--success-border);
+}
+.badge[data-variant='outline'][data-tone='warning'] {
+  color: var(--warning-text);
+  border-color: var(--warning-border);
+}
+.badge[data-variant='outline'][data-tone='danger'] {
+  color: var(--danger-text);
+  border-color: var(--danger-border);
+}
+.badge[data-variant='outline'][data-tone='accent'] {
+  color: var(--accent-text);
+  border-color: var(--accent-border);
+}
+
+/* ---- Kbd ------------------------------------------------------------------ */
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-default);
+  background: var(--bg-inset);
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  line-height: 1;
+}
+
+/* ---- Empty state ---------------------------------------------------------- */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: var(--space-14) var(--space-9);
+  gap: var(--space-4);
+}
+
+.empty[data-compact] {
+  padding: var(--space-10) var(--space-6);
+}
+
+.emptyIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-muted);
+  color: var(--text-muted);
+  margin-bottom: var(--space-2);
+}
+
+.emptyIcon > svg {
+  width: 17px;
+  height: 17px;
+}
+
+.emptyTitle {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.emptyText {
+  font-size: var(--text-base);
+  color: var(--text-muted);
+  max-width: 42ch;
+  line-height: var(--leading-normal);
+}
+
+.emptyActions {
+  display: flex;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* ---- Banner --------------------------------------------------------------- */
+
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-5);
+  padding: var(--space-6) var(--space-7);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  font-size: var(--text-base);
+}
+
+.banner[data-tone='warning'] {
+  border-color: var(--warning-border);
+  background: var(--warning-soft);
+}
+.banner[data-tone='danger'] {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+}
+.banner[data-tone='success'] {
+  border-color: var(--success-border);
+  background: var(--success-soft);
+}
+.banner[data-tone='accent'] {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.bannerIcon {
+  display: flex;
+  flex: none;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+.banner[data-tone='warning'] .bannerIcon {
+  color: var(--warning-text);
+}
+.banner[data-tone='danger'] .bannerIcon {
+  color: var(--danger-text);
+}
+.banner[data-tone='success'] .bannerIcon {
+  color: var(--success-text);
+}
+.banner[data-tone='accent'] .bannerIcon {
+  color: var(--accent-text);
+}
+
+.bannerIcon > svg {
+  width: 15px;
+  height: 15px;
+}
+
+.bannerBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.bannerTitle {
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+}
+
+.bannerText {
+  color: var(--text-secondary);
+  margin-top: var(--space-1);
+  line-height: var(--leading-snug);
+}
+
+.bannerAction {
+  flex: none;
+}

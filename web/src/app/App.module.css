@@ -1,0 +1,264 @@
+/* =============================================================================
+   Boot screen, 404 and route transitions
+   ========================================================================== */
+
+.boot {
+  display: flex;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.bootSidebar {
+  width: var(--sidebar-width);
+  flex: none;
+  border-right: 1px solid var(--border-muted);
+  background: var(--bg-surface);
+  padding: var(--space-7) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.bootBrand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  padding: var(--space-2) var(--space-2) var(--space-9);
+}
+
+.bootMark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-skeleton);
+  color: var(--text-faint);
+  flex: none;
+}
+
+.bootMark > svg {
+  width: 15px;
+  height: 15px;
+}
+
+.bootBrandText {
+  width: 96px;
+  height: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-skeleton);
+}
+
+.bootNavItem {
+  height: 30px;
+  border-radius: var(--radius-md);
+  background: var(--bg-skeleton);
+}
+
+.bootMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.bootTopbar {
+  height: var(--topbar-height);
+  flex: none;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.bootContent {
+  flex: 1;
+  padding: var(--space-10);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.bootTitle {
+  width: 220px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-skeleton);
+}
+
+.bootSubtitle {
+  width: min(560px, 80%);
+  height: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-skeleton);
+}
+
+.bootStrip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--border-muted);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+}
+
+.bootMetric {
+  height: 84px;
+  background: var(--bg-surface);
+}
+
+.bootPanels {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr;
+  gap: var(--space-8);
+}
+
+.bootPanel {
+  height: 260px;
+  border-radius: var(--radius-xl);
+  background: var(--bg-skeleton);
+  opacity: 0.6;
+}
+
+/* ---- Error ---------------------------------------------------------------- */
+
+.bootError {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-9);
+  background: var(--bg-canvas);
+}
+
+.bootErrorCard {
+  max-width: 420px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-11) var(--space-10);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  background: var(--bg-surface);
+}
+
+.bootErrorCard h1 {
+  font-size: var(--text-xl);
+  color: var(--text-primary);
+}
+
+.bootErrorCard p {
+  font-size: var(--text-base);
+  color: var(--text-muted);
+  line-height: var(--leading-normal);
+}
+
+.bootErrorButton {
+  align-self: center;
+  height: 32px;
+  padding-inline: var(--space-8);
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+}
+
+/* ---- 404 ------------------------------------------------------------------ */
+
+.notFound {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-5);
+  text-align: center;
+  padding: var(--space-15) var(--space-9);
+  min-height: 60vh;
+}
+
+.notFoundIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-muted);
+  background: var(--bg-inset);
+  color: var(--text-muted);
+  margin-bottom: var(--space-3);
+}
+
+.notFoundIcon > svg {
+  width: 19px;
+  height: 19px;
+}
+
+.notFoundTitle {
+  font-size: var(--text-2xl);
+  color: var(--text-primary);
+}
+
+.notFoundText {
+  font-size: var(--text-md);
+  color: var(--text-muted);
+  max-width: 44ch;
+  line-height: var(--leading-normal);
+}
+
+.notFoundLink {
+  margin-top: var(--space-4);
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  padding-inline: var(--space-7);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+}
+
+.notFoundLink:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+/* ---- Route transition ----------------------------------------------------- */
+
+.routeTransition {
+  animation: routeIn var(--duration-base) var(--ease-out);
+}
+
+@keyframes routeIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .routeTransition {
+    animation: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .bootSidebar {
+    display: none;
+  }
+
+  .bootContent {
+    padding: var(--space-7);
+  }
+
+  .bootStrip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bootPanels {
+    grid-template-columns: 1fr;
+  }
+}

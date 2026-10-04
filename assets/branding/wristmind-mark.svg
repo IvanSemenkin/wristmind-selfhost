@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <title>WristMind mark</title>
+  <path fill="#0B8CFF" d="M7 24 16 40 24 30 32 40 41 24 36.5 21.5 31 32 24 26 17 32 11.5 21.5Z"/>
+  <path fill="#31D6FF" d="M12 19C15 9 33 9 36 19L32 20.5C30 14 18 14 16 20.5Z"/>
+  <path fill="#31D6FF" d="M16 23C18 16 30 16 32 23L28 24.5C27 21 21 21 20 24.5Z"/>
+  <circle cx="24" cy="28.5" r="3.5" fill="#76ECFF"/>
+</svg>

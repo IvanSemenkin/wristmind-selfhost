@@ -1,0 +1,64 @@
+{
+  "configVersion": "v3",
+  "app": {
+    "appId": 1059741,
+    "appName": "WristMind LIVE",
+    "appType": "app",
+    "version": {
+      "code": 77,
+      "name": "0.7.7"
+    },
+    "icon": "icon.png",
+    "vender": "WristMind",
+    "description": "Voice assistant remote control"
+  },
+  "permissions": [
+    "data:os.device.info",
+    "device:os.local_storage"
+  ],
+  "runtime": {
+    "apiVersion": {
+      "compatible": "3.0",
+      "target": "3.0",
+      "minVersion": "3.0"
+    }
+  },
+  "targets": {
+    "bip-6": {
+      "module": {
+        "page": {
+          "pages": [
+            "pages/official"
+          ]
+        },
+        "app-side": {
+          "path": "app-side/index"
+        }
+      },
+      "platforms": [
+        {
+          "name": "amazfit-bip-6",
+          "deviceSource": 9765120
+        },
+        {
+          "name": "amazfit-bip-6",
+          "deviceSource": 9765121
+        },
+        {
+          "name": "amazfit-bip-6",
+          "deviceSource": 10158337
+        }
+      ],
+      "designWidth": 390
+    }
+  },
+  "i18n": {
+    "ru-RU": {
+      "appName": "WristMind LIVE"
+    },
+    "en-US": {
+      "appName": "WristMind LIVE"
+    }
+  },
+  "defaultLanguage": "ru-RU"
+}
