@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { SessionContext, type Session, type SessionState } from '@/session';
-import { createApiService, enrollWebSession, WristMindProvider } from '@/services';
-import { ConfirmProvider, ToastProvider, Button, Field, Input, Panel, PanelBody } from '@/components';
+import { createApiService, WristMindProvider } from '@/services';
+import { ConfirmProvider, ToastProvider } from '@/components';
 import { ThemeProvider } from './ThemeProvider';
 import { AppShell } from './AppShell';
 import { BootError, BootScreen, NotFoundPage } from './Chrome';
+import { FirstRunWizard } from './FirstRunWizard';
 import { RouterProvider } from './router';
 import { ROUTES } from './routes';
 import { useStoreStatus } from '@/store';
@@ -35,7 +36,7 @@ export function App() {
   }, []);
 
   if (!hydrated) return <BootScreen />;
-  if (!session) return <EnrollmentScreen onEnrolled={(next) => {
+  if (!session) return <FirstRunWizard onEnrolled={(next) => {
     window.localStorage.setItem(SESSION_KEY, JSON.stringify(next));
     setSession(next);
   }} />;
@@ -62,50 +63,6 @@ export function App() {
         </ConfirmProvider>
       </ToastProvider>
     </ThemeProvider>
-  );
-}
-
-function EnrollmentScreen({ onEnrolled }: { onEnrolled: (session: Session) => void }) {
-  const [baseUrl, setBaseUrl] = useState(() => window.location.origin);
-  const [method, setMethod] = useState<'code' | 'secret'>('code');
-  const [credential, setCredential] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = async () => {
-    setBusy(true); setError(null);
-    try {
-      const session = await enrollWebSession(baseUrl, method, credential.trim());
-      onEnrolled(session);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Не удалось подключить панель');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <main style={{ minHeight: '100dvh', display: 'grid', placeItems: 'center', padding: 24 }}>
-      <div style={{ width: 'min(100%, 440px)' }}><Panel><PanelBody>
-        <div style={{ display: 'grid', gap: 12, marginBottom: 24 }}>
-          <h1 style={{ margin: 0 }}>Подключить WristMind</h1>
-          <p style={{ margin: 0, color: 'var(--text-secondary)' }}>Введите адрес API и одноразовый код из уже подключённой панели.</p>
-        </div>
-        <form onSubmit={(event) => { event.preventDefault(); void submit(); }} style={{ display: 'grid', gap: 16 }}>
-          <Field label="Адрес API" htmlFor="api-url">
-            <Input id="api-url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} mono />
-          </Field>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            <Button type="button" variant={method === 'code' ? 'primary' : 'secondary'} onClick={() => setMethod('code')}>Код доступа</Button>
-            <Button type="button" variant={method === 'secret' ? 'primary' : 'secondary'} onClick={() => setMethod('secret')}>Bootstrap secret</Button>
-          </div>
-          <Field label={method === 'code' ? 'Одноразовый код' : 'Bootstrap secret'} htmlFor="credential" error={error ?? undefined}>
-            <Input id="credential" type={method === 'secret' ? 'password' : 'text'} value={credential} onChange={(event) => setCredential(event.target.value)} mono autoComplete="off" />
-          </Field>
-          <Button type="submit" variant="primary" loading={busy} disabled={!baseUrl.trim() || !credential.trim()} block>Подключить панель</Button>
-        </form>
-      </PanelBody></Panel></div>
-    </main>
   );
 }
 

@@ -82,6 +82,10 @@ class AppSettings(Base):
     source_intent_prompt: Mapped[str] = mapped_column(Text, default=DEFAULT_SOURCE_INTENT_PROMPT)
     source_candidate_prompt: Mapped[str] = mapped_column(Text, default=DEFAULT_SOURCE_CANDIDATE_PROMPT)
     developer_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    # Set by the first-run wizard so it stops appearing on every panel open.
+    first_run_completed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     history_message_limit: Mapped[int] = mapped_column(Integer, default=12)
     default_model_id: Mapped[str] = mapped_column(String(160), default="openrouter:google/gemini-2.5-flash-lite")
     stream_responses: Mapped[bool] = mapped_column(Boolean, default=True)

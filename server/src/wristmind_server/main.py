@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import httpx
 import json
 import logging
 import re
@@ -11,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from pydantic import SecretStr
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -82,6 +84,11 @@ from .schemas import (
     QuickChatCreate,
     TranscriptionResponse,
     CurrentUserResponse,
+    ProviderKeyCheckRequest,
+    ProviderKeyCheckResponse,
+    ProviderKeySaveRequest,
+    ProviderKeySaveResponse,
+    SetupStatusResponse,
 )
 from .fallback_auth import issue_fallback_ticket
 from . import latency_trace
@@ -93,6 +100,9 @@ from .telegram_bot import bot_is_enabled, handle_update
 
 
 logger = logging.getLogger("uvicorn.error")
+# Matches a container id inside /proc/self/cgroup or /etc/hostname, so the API
+# can ask Docker to restart itself after an environment change.
+_CONTAINER_ID_RE = re.compile(r"([0-9a-f]{12,64})")
 
 QUICK_CHAT_MODE_NAME = "Быстрый чат"
 QUICK_CHAT_MODE_DESCRIPTION = "Школа, быт, готовка и любые общие вопросы."
@@ -228,6 +238,294 @@ async def job_belongs_to_user(job: Job, user_id: str, session: AsyncSession) -> 
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "version": "1.0.0"}
+
+
+# ---------------------------------------------------------------------------
+# First-run setup (/setup)
+#
+# The wizard needs to know whether this installation is already claimed and
+# whether it can actually answer. These routes are unauthenticated on purpose
+# and expose booleans and counts only: never keys, addresses or tokens.
+# ---------------------------------------------------------------------------
+_PROVIDER_ENV_KEYS = {
+    "openrouter": "WRISTMIND_OPENROUTER_API_KEY",
+    "deepseek": "WRISTMIND_DEEPSEEK_API_KEY",
+}
+_ENV_FILE_PATH = Path(__file__).resolve().parents[2] / ".env"
+# Markers that mean "no key was ever supplied".
+_PLACEHOLDER_KEYS = {"", "change-me", "test-deepseek-key"}
+
+
+def _provider_key_is_real(secret: object) -> bool:
+    if secret is None:
+        return False
+    value = secret.get_secret_value() if hasattr(secret, "get_secret_value") else str(secret)
+    return value.strip() not in _PLACEHOLDER_KEYS
+
+
+def _providers_with_keys(settings: Settings) -> list[str]:
+    found: list[str] = []
+    if _provider_key_is_real(settings.openrouter_api_key):
+        found.append("openrouter")
+    if _provider_key_is_real(settings.deepseek_api_key):
+        found.append("deepseek")
+    return found
+
+
+def _update_env_file(path: Path, updates: dict[str, str]) -> None:
+    """Set ``KEY=value`` lines, preserving comments and unrelated values."""
+    lines: list[str] = []
+    if path.is_file():
+        lines = path.read_text(encoding="utf-8").splitlines()
+    remaining = dict(updates)
+    result: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        matched = None
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            name = stripped.split("=", 1)[0].strip()
+            if name in remaining:
+                matched = name
+        if matched is not None:
+            result.append(f"{matched}={remaining.pop(matched)}")
+        else:
+            result.append(line)
+    for name, value in remaining.items():
+        result.append(f"{name}={value}")
+    path.write_text("\n".join(result).rstrip("\n") + "\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+@app.get("/v1/setup/status", response_model=SetupStatusResponse)
+async def setup_status(
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> SetupStatusResponse:
+    """Honest state of a fresh installation, safe to call before enrollment."""
+    database_ok = True
+    try:
+        admin_devices = int(
+            await session.scalar(
+                select(func.count())
+                .select_from(Device)
+                .where(Device.is_admin.is_(True), Device.revoked_at.is_(None))
+            )
+            or 0
+        )
+        active_modes = int(
+            await session.scalar(select(func.count()).select_from(Mode).where(Mode.deleted_at.is_(None))) or 0
+        )
+        knowledge_sources = int(
+            await session.scalar(
+                select(func.count()).select_from(KnowledgeSource).where(KnowledgeSource.deleted_at.is_(None))
+            )
+            or 0
+        )
+    except Exception:  # noqa: BLE001 - the wizard must survive a broken database
+        logger.exception("setup status could not read the database")
+        database_ok = False
+        admin_devices = active_modes = knowledge_sources = 0
+
+    with_keys = _providers_with_keys(settings)
+    provider_mode = "mock" if settings.mock_providers else "live"
+    provider_ready = settings.mock_providers or bool(with_keys)
+    instance_claimed = admin_devices > 0
+
+    # A one-time marker in app_settings stops the wizard from reappearing.
+    # If the row is missing this reports "not completed", never an error.
+    first_run_completed = False
+    if database_ok:
+        try:
+            app_settings = await session.get(AppSettings, 1)
+            first_run_completed = bool(app_settings and app_settings.first_run_completed)
+        except Exception:  # noqa: BLE001 - the wizard must survive a broken schema
+            logger.exception("setup status could not read the first-run flag")
+            first_run_completed = False
+
+    return SetupStatusResponse(
+        first_run_completed=first_run_completed,
+        instance_claimed=instance_claimed,
+        admin_devices=admin_devices,
+        active_modes=active_modes,
+        knowledge_sources=knowledge_sources,
+        database_ok=database_ok,
+        provider_mode=provider_mode,
+        provider_ready=provider_ready,
+        providers_with_keys=with_keys,
+        setup_required=not instance_claimed,
+    )
+
+
+@app.post("/v1/setup/complete", status_code=204)
+async def setup_complete(
+    device: Device = Depends(current_device),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    """Mark the first run as done so the wizard does not reappear."""
+    _ = device
+    app_settings = await session.get(AppSettings, 1)
+    if app_settings is None:
+        app_settings = AppSettings(id=1, first_run_completed=True)
+        session.add(app_settings)
+    else:
+        app_settings.first_run_completed = True
+    await session.commit()
+
+
+@app.post("/v1/setup/provider/check", response_model=ProviderKeyCheckResponse)
+async def setup_provider_check(
+    request: ProviderKeyCheckRequest,
+    settings: Settings = Depends(get_settings),
+) -> ProviderKeyCheckResponse:
+    """Make one real, tiny provider call so the wizard can say it works.
+
+    The candidate key is used for this request only and is never stored.
+    """
+    provider = request.provider
+    field = "openrouter_api_key" if provider == "openrouter" else "deepseek_api_key"
+    model_id = "openrouter:google/gemini-2.5-flash-lite" if provider == "openrouter" else "deepseek:deepseek-flash"
+    candidate = settings.model_copy(
+        update={
+            field: SecretStr(request.api_key),
+            "mock_providers": False,
+        }
+    )
+    router = ProviderRouter(candidate)
+    started = time.monotonic()
+    try:
+        stream = router.stream_answer(
+            model_id,
+            [{"role": "user", "content": "ping"}],
+            thinking=False,
+            reuse_connection=False,
+        )
+        first = await asyncio.wait_for(anext(stream), timeout=20)
+        await stream.aclose()
+    except StopAsyncIteration:
+        return ProviderKeyCheckResponse(
+            ok=False, provider=provider, message="Провайдер вернул пустой ответ."
+        )
+    except (ProviderError, httpx.HTTPError, ValueError) as exc:
+        return ProviderKeyCheckResponse(
+            ok=False,
+            provider=provider,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            message=_provider_error_message(exc),
+        )
+    except asyncio.TimeoutError:
+        return ProviderKeyCheckResponse(
+            ok=False, provider=provider, message="Провайдер не ответил за 20 секунд."
+        )
+    finally:
+        await router.aclose()
+
+    return ProviderKeyCheckResponse(
+        ok=bool(str(first).strip()),
+        provider=provider,
+        latency_ms=int((time.monotonic() - started) * 1000),
+        message="Ключ рабочий." if str(first).strip() else "Провайдер вернул пустой ответ.",
+    )
+
+
+def _provider_error_message(exc: Exception) -> str:
+    # The status may sit on the exception itself or on the cause it wraps.
+    status_code = None
+    for candidate in (exc, getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
+        if candidate is None:
+            continue
+        found = getattr(getattr(candidate, "response", None), "status_code", None)
+        if found is not None:
+            status_code = found
+            break
+    if status_code in {401, 403}:
+        return "Ключ отклонён провайдером (нет доступа)."
+    if status_code == 402:
+        return "На ключе нет средств."
+    if status_code == 429:
+        return "Провайдер ограничил частоту запросов; ключ, скорее всего, рабочий."
+    if isinstance(exc, asyncio.TimeoutError):
+        return "Провайдер не ответил вовремя."
+    return f"Проверка не удалась: {type(exc).__name__}."
+
+
+@app.post("/v1/setup/provider", response_model=ProviderKeySaveResponse)
+async def setup_provider_save(
+    request: ProviderKeySaveRequest,
+    settings: Settings = Depends(get_settings),
+) -> ProviderKeySaveResponse:
+    """Write the key into the env file next to this server.
+
+    The running container keeps the old value until it is restarted, so this
+    reports that honestly instead of pretending the change is live.
+    """
+    _ = settings
+    env_name = _PROVIDER_ENV_KEYS[request.provider]
+    updates = {env_name: request.api_key}
+    # Adding a real key means real answers: leaving mocks on would silently
+    # ignore the key. An explicit request can still override this.
+    if request.mock_providers is None:
+        updates["WRISTMIND_MOCK_PROVIDERS"] = "false"
+    else:
+        updates["WRISTMIND_MOCK_PROVIDERS"] = "true" if request.mock_providers else "false"
+    try:
+        _update_env_file(_ENV_FILE_PATH, updates)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Не удалось записать {_ENV_FILE_PATH.name}: {exc.strerror or exc}",
+        ) from exc
+
+    restart_supported = Path("/var/run/docker.sock").exists()
+    restarted = False
+    if restart_supported:
+        restarted = await _restart_self_container()
+    if restarted:
+        message = "Ключ сохранён, сервис перезапускается."
+    elif restart_supported:
+        message = "Ключ сохранён; перезапустите API вручную: ./wristmind restart"
+    else:
+        message = "Ключ сохранён; перезапустите API вручную: ./wristmind restart"
+    return ProviderKeySaveResponse(
+        provider=request.provider,
+        env_file=str(_ENV_FILE_PATH),
+        restart_required=not restarted,
+        restart_supported=restart_supported,
+        message=message,
+    )
+
+
+async def _restart_self_container() -> bool:
+    """Ask Docker to restart this API container; never raises."""
+    container_id = ""
+    try:
+        container_id = Path("/proc/self/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        container_id = ""
+    match = _CONTAINER_ID_RE.search(container_id)
+    if match is None:
+        hostname = ""
+        try:
+            hostname = Path("/etc/hostname").read_text(encoding="utf-8").strip()
+        except OSError:
+            hostname = ""
+        if not _CONTAINER_ID_RE.fullmatch(hostname):
+            return False
+        container_id = hostname
+    else:
+        container_id = match.group(1)
+
+    transport = httpx.AsyncHTTPTransport(uds="/var/run/docker.sock")
+    async with httpx.AsyncClient(transport=transport, base_url="http://docker") as client:
+        try:
+            response = await client.post(
+                f"/containers/{container_id}/restart", params={"t": "5"}, timeout=15
+            )
+        except httpx.HTTPError:
+            return False
+    return response.status_code in {204, 304}
 
 
 @app.post("/v1/telegram/webhook", status_code=204)

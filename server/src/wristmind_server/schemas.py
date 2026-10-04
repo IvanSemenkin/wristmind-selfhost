@@ -354,3 +354,48 @@ class KnowledgeSourceDetailResponse(KnowledgeSourceResponse):
 
 class KnowledgeReprocessRequest(BaseModel):
     client_request_id: str = Field(min_length=1, max_length=100)
+
+
+class SetupStatusResponse(BaseModel):
+    """What a first-run wizard can honestly say about this installation.
+
+    Deliberately unauthenticated and secret-free: it reports booleans and
+    counts, never keys, addresses or tokens.
+    """
+
+    first_run_completed: bool
+    instance_claimed: bool
+    admin_devices: int
+    active_modes: int
+    knowledge_sources: int
+    database_ok: bool
+    provider_mode: str
+    provider_ready: bool
+    providers_with_keys: list[str]
+    setup_required: bool
+
+
+class ProviderKeyCheckRequest(BaseModel):
+    provider: str = Field(pattern="^(openrouter|deepseek)$")
+    api_key: str = Field(min_length=8, max_length=400)
+
+
+class ProviderKeyCheckResponse(BaseModel):
+    ok: bool
+    provider: str
+    latency_ms: int | None = None
+    message: str
+
+
+class ProviderKeySaveRequest(BaseModel):
+    provider: str = Field(pattern="^(openrouter|deepseek)$")
+    api_key: str = Field(min_length=8, max_length=400)
+    mock_providers: bool | None = None
+
+
+class ProviderKeySaveResponse(BaseModel):
+    provider: str
+    env_file: str
+    restart_required: bool
+    restart_supported: bool
+    message: str

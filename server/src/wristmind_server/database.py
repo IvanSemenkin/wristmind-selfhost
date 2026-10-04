@@ -88,6 +88,12 @@ async def init_database() -> None:
                 text("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS retention_days INTEGER NOT NULL DEFAULT 90")
             )
             await connection.execute(
+                text(
+                    "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS first_run_completed "
+                    "BOOLEAN NOT NULL DEFAULT FALSE"
+                )
+            )
+            await connection.execute(
                 text("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS developer_mode BOOLEAN NOT NULL DEFAULT FALSE")
             )
             await connection.execute(
