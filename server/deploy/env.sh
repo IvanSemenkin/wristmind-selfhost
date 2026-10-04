@@ -81,12 +81,30 @@ wm_template_value() {
     sed -n "s/^${2:?key}=//p" "${1:?template}" | head -n 1
 }
 
-# wm_env_public_base_url <url>
-# Derives the default CORS origin (origin+port) from the public base URL.
-wm_public_cors() {
-    _wm_url="${1-}"
-    [ -n "$_wm_url" ] || { printf '%s\n' "$WM_CORS_DEFAULT"; return 0; }
-    printf '["%s"]\n' "${_wm_url%/}"
+# wm_env_merge_cors <server_dir> <url>
+# Keeps existing origins and adds the given URL (its origin form) once.
+# String-level merge on purpose: it must not destroy the existing JSON.
+wm_env_merge_cors() {
+    _wm_server="${1:?server_dir}"
+    _wm_url="${2:?url}"
+    _wm_origin="${_wm_url%/}"
+    _wm_current="$(wm_env_get "$_wm_server" WRISTMIND_CORS_ORIGINS)"
+    [ -n "$_wm_current" ] || _wm_current="$WM_CORS_DEFAULT"
+    case "$_wm_current" in
+        *"$_wm_origin"*)
+            printf '%s\n' "$_wm_current"
+            return 0
+            ;;
+    esac
+    case "$_wm_current" in
+        "["*"]")
+            _wm_prefix="${_wm_current%]}"
+            printf '%s,"%s"]\n' "$_wm_prefix" "$_wm_origin"
+            ;;
+        *)
+            printf '["%s"]\n' "$_wm_origin"
+            ;;
+    esac
 }
 
 # wm_env_create <server_dir> [public_base_url]
@@ -123,7 +141,9 @@ wm_env_create() {
 
     if [ -n "$_wm_public" ]; then
         wm_env_set "$_wm_server" WRISTMIND_PUBLIC_BASE_URL "$_wm_public"
-        wm_env_set "$_wm_server" WRISTMIND_CORS_ORIGINS "$(wm_public_cors "$_wm_public")"
+        # Adds the chosen origin to the template's local-development origins
+        # instead of replacing them.
+        wm_env_set "$_wm_server" WRISTMIND_CORS_ORIGINS "$(wm_env_merge_cors "$_wm_server" "$_wm_public")"
     fi
 
     chmod 600 "$_wm_f"

@@ -244,6 +244,54 @@ wm_compose_log() {
     return 1
 }
 
+# wm_domain_dns_status <host> -> ok | mismatch | unresolved | unknown
+# Compares the A records of a host with this machine's public-looking address.
+wm_domain_dns_status() {
+    _wm_domain="${1:?host}"
+    _wm_target="$2"
+    if ! wm_have_cmd getent && ! wm_have_cmd nslookup && ! wm_have_cmd dig; then
+        printf 'unknown\n'
+        return 0
+    fi
+    _wm_ips=""
+    if wm_have_cmd getent; then
+        _wm_ips="$(getent ahostsv4 "$_wm_domain" 2>/dev/null | awk '{print $1}' | sort -u)"
+    elif wm_have_cmd dig; then
+        _wm_ips="$(dig +short A "$_wm_domain" 2>/dev/null | sort -u)"
+    else
+        _wm_ips="$(nslookup -type=A "$_wm_domain" 2>/dev/null | awk '/^Address: / {print $2}' | sort -u)"
+    fi
+    if [ -z "$_wm_ips" ]; then
+        printf 'unresolved\n'
+        return 0
+    fi
+    for _wm_ip in $_wm_ips; do
+        if [ -n "$_wm_target" ] && [ "$_wm_ip" = "$_wm_target" ]; then
+            printf 'ok\n'
+            return 0
+        fi
+    done
+    printf 'mismatch\n'
+}
+
+# wm_public_ip — best-effort public address of this host, empty when unknown.
+wm_public_ip() {
+    for _wm_url in https://ifconfig.me https://icanhazip.com https://api.ipify.org; do
+        if wm_have_cmd curl; then
+            _wm_ip="$(curl -fsS --max-time 4 "$_wm_url" 2>/dev/null | tr -d '[:space:]')"
+        elif wm_have_cmd wget; then
+            _wm_ip="$(wget -q -T 4 -O - "$_wm_url" 2>/dev/null | tr -d '[:space:]')"
+        else
+            return 0
+        fi
+        case "$_wm_ip" in
+            "" | *[!0-9.]* ) continue ;;
+        esac
+        printf '%s\n' "$_wm_ip"
+        return 0
+    done
+}
+
 # wm_install <repo_root> [flags]
 #   --public-url=URL   public address of this install
 #   --domain=HOST      implies https://HOST
@@ -256,13 +304,14 @@ wm_install() {
     shift
     _wm_public=""
     _wm_domain=""
+    _wm_public_explicit=0
     _wm_local=0
     _wm_with_search=0
     _wm_with_telegram=0
     for _wm_arg in "$@"; do
         case "$_wm_arg" in
-            --public-url=*) _wm_public="${_wm_arg#--public-url=}" ;;
-            --domain=*) _wm_domain="${_wm_arg#--domain=}" ;;
+            --public-url=*) _wm_public="${_wm_arg#--public-url=}"; _wm_public_explicit=1 ;;
+            --domain=*) _wm_domain="${_wm_arg#--domain=}"; _wm_public_explicit=1 ;;
             --local) _wm_local=1 ;;
             --with-search) _wm_with_search=1 ;;
             --with-telegram) _wm_with_telegram=1 ;;
@@ -295,17 +344,62 @@ wm_install() {
     fi
     wm_ok "Docker Compose доступен"
 
+    # Honest DNS report before anything claims to serve HTTPS. A wrong A record
+    # is a warning, not a hard stop: the server still installs, the watch just
+    # cannot connect yet.
+    _wm_dns_ready=""
+    case "$_wm_public" in
+        https://*)
+            _wm_domain_only="${_wm_public#https://}"
+            _wm_domain_only="${_wm_domain_only%%/*}"
+            _wm_domain_only="${_wm_domain_only%%:*}"
+            _wm_public_ip="$(wm_public_ip)"
+            _wm_dns="$(wm_domain_dns_status "$_wm_domain_only" "$_wm_public_ip")"
+            case "$_wm_dns" in
+                ok)
+                    wm_ok "DNS: $_wm_domain_only указывает на $_wm_public_ip"
+                    _wm_dns_ready=1
+                    ;;
+                mismatch)
+                    wm_wait "DNS: $_wm_domain_only не указывает на $_wm_public_ip"
+                    ;;
+                unresolved)
+                    wm_wait "DNS: $_wm_domain_only пока не разрешается"
+                    ;;
+                *)
+                    wm_wait "DNS не проверен: нет getent/dig/nslookup"
+                    ;;
+            esac
+            ;;
+    esac
+
     wm_step "2/5 Секреты и .env"
     if wm_env_exists "$_wm_server" && ! wm_env_is_template "$_wm_server"; then
         wm_ok ".env уже существует, секреты не меняются"
         wm_env_backup "$_wm_server" >/dev/null 2>&1 || true
     else
-        wm_env_create "$_wm_server" "$_wm_public" || return 1
+        # Only an explicit address is written; otherwise the template's
+        # neutral localhost default stays in place.
+        if [ "$_wm_public_explicit" -eq 1 ]; then
+            wm_env_create "$_wm_server" "$_wm_public" || return 1
+        else
+            wm_env_create "$_wm_server" || return 1
+        fi
         wm_ok ".env создан, секреты сгенерированы"
     fi
     if wm_env_is_template "$_wm_server"; then
         wm_err ".env остался шаблоном: заполните значения вручную."
         return 1
+    fi
+
+    # Persist the chosen public address and CORS origins even for an existing
+    # .env, so DNS-enrollment and browser access use the real address.
+    # Persist an explicit address even for an existing .env, so enrollment
+    # links and browser access use the same one.
+    if [ "$_wm_public_explicit" -eq 1 ]; then
+        wm_env_set "$_wm_server" WRISTMIND_PUBLIC_BASE_URL "$_wm_public"
+        wm_env_set "$_wm_server" WRISTMIND_CORS_ORIGINS "$(wm_env_merge_cors "$_wm_server" "$_wm_public")"
+        wm_ok "публичный адрес сохранён: $_wm_public"
     fi
 
     if [ "$_wm_local" -eq 1 ]; then
