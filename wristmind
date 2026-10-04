@@ -91,6 +91,7 @@ wm_install_menu() {
     wm_menu_item 1 "Установить"
     wm_menu_item 2 "Проверить требования (Docker, память, порты)"
     wm_menu_item 3 "Что это и что понадобится"
+    wm_menu_item 4 "Локально, чтобы посмотреть (SQLite, моки, без ключей и часов)"
     wm_menu_item 0 "Выход"
     wm_prompt
 }
@@ -105,7 +106,8 @@ wm_what_is_this() {
     printf '%s\n' '  - ключ провайдера модели: OpenRouter или DeepSeek; оплата на владельце;'
     printf '%s\n' '  - Wi-Fi, где на момент установки телефон и часы в одной сети.'
     printf '\n%s\n' 'Не нужно: Google Play, аккаунты сторонних сервисов, VPN, ручной adb с ноутбука.'
-    printf '\n%s\n' 'Для первого запуска без сервера: docker compose up на ноутбуке с моками.'
+    printf '\n%s\n' 'Для первого запуска без сервера: выберите пункт 4 выше — это локальный
+режим на SQLite с моками, без ключей, домена и часов.'
 }
 
 wm_do_install() {
@@ -222,6 +224,12 @@ wm_install_menu_loop() {
                 wm_requirements "$WM_ROOT" || true
                 ;;
             3) wm_what_is_this ;;
+            4)
+                if wm_do_install --local; then
+                    return 0
+                fi
+                return 1
+                ;;
             0 | q | Q | "") return 0 ;;
             *) printf '\nНеизвестный пункт: %s\n' "$_wm_choice" ;;
         esac
@@ -267,6 +275,9 @@ WristMind — установка и управление сервером.
   ./wristmind install             установить или согласовать установку
   ./wristmind install --domain=example.com --yes
   ./wristmind install --public-url=http://10.0.0.5:8080 --yes
+  ./wristmind install --local     локальный просмотр: SQLite, моки, без домена
+  ./wristmind install --with-search    дополнительно поднять приватный SearXNG
+  ./wristmind install --with-telegram  дополнительно поднять Telegram-бота
   ./wristmind check               проверить требования
   ./wristmind status              показать определённое состояние
   ./wristmind version             версия этого чекаута

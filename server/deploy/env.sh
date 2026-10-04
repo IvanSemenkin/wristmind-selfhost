@@ -62,6 +62,20 @@ wm_random_hex() {
     openssl rand -hex "$_wm_bytes"
 }
 
+# wm_env_ensure <server_dir> <KEY> <value>
+# Like wm_env_set, but never overwrites an existing non-empty value. Used for
+# secrets that must exist in .env without surprising an existing install.
+wm_env_ensure() {
+    _wm_server="${1:?server_dir}"
+    _wm_key="${2:?key}"
+    _wm_val="${3-}"
+    _wm_existing="$(wm_env_get "$_wm_server" "$_wm_key")"
+    if [ -n "$_wm_existing" ]; then
+        return 0
+    fi
+    wm_env_set "$_wm_server" "$_wm_key" "$_wm_val"
+}
+
 # wm_template_value <template> <KEY>
 wm_template_value() {
     sed -n "s/^${2:?key}=//p" "${1:?template}" | head -n 1

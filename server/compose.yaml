@@ -49,7 +49,9 @@ services:
       - path: .env
         required: false
     environment:
-      WRISTMIND_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-wristmind}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-wristmind}
+      # Default target is the bundled PostgreSQL. A local "just look" install
+      # overrides this with SQLite through server/.env.
+      WRISTMIND_DATABASE_URL: ${WRISTMIND_DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-wristmind}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-wristmind}}
       WRISTMIND_STORAGE_DIR: /data/private
       # Set only when the optional Firebase service account key is present.
       WRISTMIND_FIREBASE_CREDENTIALS_PATH: ${WRISTMIND_FIREBASE_CONTAINER_PATH:-/run/secrets/firebase-admin.json}
@@ -61,9 +63,12 @@ services:
         read_only: true
         bind:
           create_host_path: false
+    # The bundled database is skipped for a local SQLite install. A plain
+    # `docker compose up` still starts db because its profile list is empty.
     depends_on:
       db:
         condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
       interval: 10s
@@ -80,7 +85,7 @@ services:
       - path: .env
         required: false
     environment:
-      WRISTMIND_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-wristmind}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-wristmind}
+      WRISTMIND_DATABASE_URL: ${WRISTMIND_DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-wristmind}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-wristmind}}
       WRISTMIND_STORAGE_DIR: /data/private
       # Search is optional; the worker degrades gracefully when this is unreachable.
       WRISTMIND_SEARXNG_URL: ${WRISTMIND_SEARXNG_URL:-}
@@ -96,6 +101,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
+        required: false
       # SearXNG lives behind the opt-in `search` profile. `required: false`
       # keeps a self-host without web search from failing to start.
       searxng:
@@ -150,13 +156,14 @@ services:
       - path: .env
         required: false
     environment:
-      WRISTMIND_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-wristmind}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-wristmind}
+      WRISTMIND_DATABASE_URL: ${WRISTMIND_DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-wristmind}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-wristmind}}
       WRISTMIND_STORAGE_DIR: /data/private
     volumes:
       - private_files:/data/private
     depends_on:
       db:
         condition: service_healthy
+        required: false
 
   # --------------------------------------------------------------------------
   # Profile: vpn-routing — provider/Telegram egress through a host VPN

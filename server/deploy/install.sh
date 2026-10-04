@@ -8,6 +8,8 @@ WM_DEFAULT_INSTALL_TIMEOUT=1200
 WM_DEFAULT_HEALTH_TIMEOUT=180
 WM_REQUIRED_RAM_MB=3800
 WM_REQUIRED_DISK_MB=10240
+# "Just look" install: a file-backed database inside the private volume.
+WM_LOCAL_DATABASE_URL="sqlite+aiosqlite:////data/private/wristmind.db"
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -242,27 +244,41 @@ wm_compose_log() {
     return 1
 }
 
-# wm_install <repo_root> [--public-url=URL] [--domain=HOST]
+# wm_install <repo_root> [flags]
+#   --public-url=URL   public address of this install
+#   --domain=HOST      implies https://HOST
+#   --local            "just look" mode: SQLite, mock providers, no db container
+#   --with-search      enable the private SearXNG profile
+#   --with-telegram    enable the Telegram notifications profile
 # Idempotent: an existing .env is preserved and compose only reconciles state.
 wm_install() {
     _wm_root="${1:?repo_root}"
     shift
     _wm_public=""
     _wm_domain=""
+    _wm_local=0
+    _wm_with_search=0
+    _wm_with_telegram=0
     for _wm_arg in "$@"; do
         case "$_wm_arg" in
             --public-url=*) _wm_public="${_wm_arg#--public-url=}" ;;
             --domain=*) _wm_domain="${_wm_arg#--domain=}" ;;
+            --local) _wm_local=1 ;;
+            --with-search) _wm_with_search=1 ;;
+            --with-telegram) _wm_with_telegram=1 ;;
+            *) wm_wait "неизвестный параметр проигнорирован: $_wm_arg" ;;
         esac
     done
 
     _wm_server="$(wm_server_dir "$_wm_root")"
     _wm_port="$(wm_http_port "$_wm_server")"
 
-    # A domain implies HTTPS; a bare address stays plain HTTP.
-    if [ -n "$_wm_domain" ]; then
-        _wm_public="https://${_wm_domain#https://}"
-        _wm_public="${_wm_public#http://}"
+    # A domain implies HTTPS; a bare address stays plain HTTP. A local install
+    # is always reached at loopback.
+    if [ "$_wm_local" -eq 1 ]; then
+        _wm_public="http://127.0.0.1:$_wm_port"
+    elif [ -n "$_wm_domain" ]; then
+        _wm_public="https://${_wm_domain#*://}"
     elif [ -z "$_wm_public" ]; then
         _wm_ip="$(wm_host_ip)"
         if [ "$_wm_port" = "80" ]; then
@@ -292,18 +308,45 @@ wm_install() {
         return 1
     fi
 
-    wm_step "3/5 База данных"
-    if ! wm_compose_log "$_wm_server" up -d db; then
-        wm_err "не удалось поднять контейнер db."
-        return 1
+    if [ "$_wm_local" -eq 1 ]; then
+        wm_env_set "$_wm_server" WRISTMIND_DATABASE_URL "$WM_LOCAL_DATABASE_URL"
+        wm_env_set "$_wm_server" WRISTMIND_MOCK_PROVIDERS true
+        wm_ok "локальный режим: SQLite и моки провайдеров"
     fi
-    wm_ok "контейнер db запущен"
+    if [ "$_wm_with_search" -eq 1 ]; then
+        wm_env_ensure "$_wm_server" SEARXNG_SECRET "$(wm_random_hex 32)"
+        wm_env_set "$_wm_server" WRISTMIND_SEARXNG_URL "http://searxng:8080"
+        wm_ok "веб-поиск включён (профиль search)"
+    fi
+
+    _wm_profiles=""
+    [ "$_wm_with_search" -eq 1 ] && _wm_profiles="$_wm_profiles --profile search"
+    [ "$_wm_with_telegram" -eq 1 ] && _wm_profiles="$_wm_profiles --profile telegram"
+
+    if [ "$_wm_local" -eq 0 ]; then
+        wm_step "3/5 База данных"
+        if ! wm_compose_log "$_wm_server" up -d db; then
+            wm_err "не удалось поднять контейнер db."
+            return 1
+        fi
+        wm_ok "контейнер db запущен"
+    else
+        wm_step "3/5 База данных"
+        wm_ok "внешняя база не нужна: используется SQLite в приватном томе"
+    fi
 
     wm_step "4/5 API, обработчик и веб-шлюз"
-    if ! wm_compose_log "$_wm_server" up -d api worker nginx; then
+    # shellcheck disable=SC2086
+    if ! wm_compose_log "$_wm_server" $_wm_profiles up -d api worker nginx; then
         wm_err "не удалось поднять api/worker/nginx. Последние строки:"
         wm_compose "$_wm_server" logs --tail=40 api worker nginx 2>&1 | sed 's/^/   /'
         return 1
+    fi
+    if [ "$_wm_with_telegram" -eq 1 ]; then
+        # shellcheck disable=SC2086
+        wm_compose_log "$_wm_server" $_wm_profiles up -d telegram || {
+            wm_err "профиль telegram не поднялся; он получит значение только после установки токена."
+        }
     fi
     wm_ok "api, worker и nginx запущены"
 
@@ -333,22 +376,29 @@ wm_access_block() {
     printf '  Панель:      %s/main\n' "$_wm_base"
     printf '  API:         %s/v1\n' "$_wm_base"
     # Host address for reaching the panel from another machine on the LAN.
+    # Not shown for a loopback-only local install, where it would be wrong.
+    case "$_wm_public" in
+        *127.0.0.1* | *localhost*) _wm_show_lan=0 ;;
+        *) _wm_show_lan=1 ;;
+    esac
     _wm_host="$(wm_host_ip)"
     _wm_hostport="${_wm_base#*://}"
     _wm_hostport="${_wm_hostport%%/*}"
     _wm_portpart="${_wm_hostport##*:}"
-    if [ "$_wm_host" != "127.0.0.1" ] && [ "$_wm_portpart" != "$_wm_hostport" ]; then
+    if [ "$_wm_show_lan" -eq 1 ] && [ "$_wm_host" != "127.0.0.1" ] \
+        && [ "$_wm_portpart" != "$_wm_hostport" ]; then
         printf '  По сети:     http://%s:%s/main\n' "$_wm_host" "$_wm_portpart"
     fi
     # Printed only when the public address is a real different (e.g. HTTPS) URL.
-    if [ -n "$_wm_public" ]; then
-        _wm_public_host="${_wm_public#*://}"
-        _wm_public_host="${_wm_public_host%%/*}"
-        _wm_public_host="${_wm_public_host%%:*}"
-        if [ "$_wm_public_host" != "$_wm_host" ]; then
-            printf '  Публичный:   %s\n' "$_wm_public"
-        fi
-    fi
+    # A public HTTPS address is what watches and remote clients use.
+    case "$_wm_public" in
+        https://*) printf '  Публичный:   %s\n' "$_wm_public" ;;
+    esac
+    case "$_wm_public" in
+        *127.0.0.1* | *localhost*)
+            printf '\n  Локальный просмотр: данные в приватном томе, ключи не нужны.\n'
+            ;;
+    esac
     printf '\n'
     # The vision says the bootstrap secret should never reach the user. Until
     # the /setup wizard exists there is no other way to enroll the first panel,
