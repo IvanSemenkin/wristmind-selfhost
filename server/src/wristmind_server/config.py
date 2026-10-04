@@ -4,7 +4,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -129,35 +129,18 @@ class Settings(BaseSettings):
         "Ты — WristMind. Отвечай на языке пользователя точно и по существу. "
         "Не выдумывай факты; если данных недостаточно, честно скажи об этом."
     )
-    # Disabled until both values are set in the ignored server .env.
-    telegram_bot_token: SecretStr | None = None
-    telegram_owner_id: int | None = None
-    telegram_webhook_secret: SecretStr | None = None
     mock_providers: bool = True
 
     # --- Latency diagnostics -------------------------------------------------
     # Diagnostic-only. Recording never changes routing, retrieval, provider
     # calls, retries, timeouts or output, and never touches the answer text.
-    # The JSONL trace is local and safe; the live Telegram feed is opt-in and
-    # off by default so a production deployment stays quiet.
+    # The trace is a local JSONL file inside the private volume.
     latency_trace_enabled: bool = True
     # Defaults to <storage_dir>/latency-trace.jsonl, i.e. the private volume
     # shared by the API and worker containers.
     latency_trace_path: Path | None = None
     latency_trace_max_bytes: int = 8_000_000
     latency_trace_backup_count: int = 5
-    # Both WRISTMIND_LATENCY_TELEGRAM_ENABLED and the unprefixed
-    # LATENCY_TELEGRAM_ENABLED are accepted.
-    latency_telegram_enabled: bool = Field(
-        default=False,
-        validation_alias=AliasChoices(
-            "WRISTMIND_LATENCY_TELEGRAM_ENABLED", "LATENCY_TELEGRAM_ENABLED"
-        ),
-    )
-    # Optional dedicated diagnostics bot. When unset, the main bot token is used.
-    latency_telegram_bot_token: SecretStr | None = None
-    # Optional explicit chat id. When unset, telegram_owner_id is used.
-    latency_telegram_chat_id: str | None = None
 
     @field_validator("allowed_models", "cors_origins", mode="before")
     @classmethod

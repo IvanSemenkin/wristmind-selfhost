@@ -144,7 +144,7 @@ export function SourceStatusBadge({ status }: { status: JobStatus }) {
 /* -------------------------------------------------------------------------- */
 
 export function DeviceIcon({ kind, className }: { kind: DeviceKind; className?: string }) {
-  const Icon = kind === 'PHONE' ? Smartphone : kind === 'WATCH' ? Watch : kind === 'TELEGRAM' ? Server : Monitor;
+  const Icon = kind === 'PHONE' ? Smartphone : kind === 'WATCH' ? Watch : Monitor;
   return (
     <span className={cn(styles.deviceIcon, className)} data-type={kind.toLowerCase()}>
       <Icon />

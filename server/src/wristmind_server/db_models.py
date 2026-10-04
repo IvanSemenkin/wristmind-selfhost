@@ -109,8 +109,6 @@ class Mode(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     color: Mapped[str] = mapped_column(String(16), default="#65F5C2")
     icon: Mapped[str] = mapped_column(String(40), default="spark")
-    # Telegram custom emoji are opaque IDs. Keep `icon` for the web and Wear UI.
-    telegram_emoji_id: Mapped[str | None] = mapped_column(String(80))
     system_prompt: Mapped[str] = mapped_column(Text, default="")
     response_model_id: Mapped[str] = mapped_column(String(160))
     hidden_on_watch: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
@@ -169,39 +167,6 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     chat: Mapped[Chat] = relationship(back_populates="messages")
-
-
-class TelegramAccount(Base):
-    """One approved Telegram private chat attached to one WristMind user."""
-
-    __tablename__ = "telegram_accounts"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    telegram_user_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
-    chat_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
-    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"), unique=True, index=True)
-    selected_mode_id: Mapped[str | None] = mapped_column(ForeignKey("modes.id"))
-    active_chat_id: Mapped[str | None] = mapped_column(ForeignKey("chats.id"))
-    emoji_target: Mapped[str | None] = mapped_column(String(120))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
-
-
-class TelegramEmojiDraft(Base):
-    """A collected custom emoji and the UI slot it is intended for."""
-
-    __tablename__ = "telegram_emoji_drafts"
-    __table_args__ = (UniqueConstraint("user_id", "slot"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
-    slot: Mapped[str] = mapped_column(String(120))
-    custom_emoji_id: Mapped[str] = mapped_column(String(80))
-    purpose: Mapped[str] = mapped_column(String(240))
-    example: Mapped[str] = mapped_column(String(240))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class KnowledgeSource(Base):

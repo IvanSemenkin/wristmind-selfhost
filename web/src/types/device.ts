@@ -8,7 +8,7 @@ import type { IsoDateTime } from './common';
    backend carries it; it is never surfaced as a management concept.
    ========================================================================== */
 
-export type DeviceKind = 'PHONE' | 'WATCH' | 'WEB' | 'TELEGRAM';
+export type DeviceKind = 'PHONE' | 'WATCH' | 'WEB';
 
 export const DEVICE_KINDS: DeviceKind[] = ['PHONE', 'WATCH', 'WEB'];
 
@@ -16,7 +16,6 @@ export const DEVICE_KIND_LABELS: Record<DeviceKind, string> = {
   PHONE: 'Телефон',
   WATCH: 'Часы',
   WEB: 'Веб-панель',
-  TELEGRAM: 'Telegram-бот',
 };
 
 export interface Device {

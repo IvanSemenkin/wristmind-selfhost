@@ -28,7 +28,6 @@ from . import latency_trace
 from .providers import ProviderError, ProviderRouter, StreamTiming, provider_attempt_diagnostics
 from .push import schedule_watch_state_changed
 from .source_prompts import DEFAULT_SOURCE_CANDIDATE_PROMPT, DEFAULT_SOURCE_INTENT_PROMPT
-from .telegram_bot import notify_answer
 from .web_search import WebSearchResult, WebSearchUnavailable, open_web_page, search_snippets_are_sufficient, search_web, web_page_prompt, web_search_prompt
 
 
@@ -494,9 +493,6 @@ async def complete_explicit_source_request(
         })
     await emit(job.id, "complete", {"message_id": assistant.id, "timings": assistant.timings})
     schedule_watch_state_changed(settings)
-    telegram_chat_id = job.payload.get("telegram_chat_id")
-    if isinstance(telegram_chat_id, str):
-        await notify_answer(telegram_chat_id, assistant.content, settings)
     return True
 
 
@@ -2386,11 +2382,7 @@ async def process_answer(job_id: str) -> None:
         prompt_chars=assistant.timings.get("prompt_chars"),
         response_chars=assistant.timings.get("response_chars"),
     )
-    latency_trace.schedule_request_summary(job.client_request_id)
     schedule_watch_state_changed(settings)
-    telegram_chat_id = job.payload.get("telegram_chat_id")
-    if isinstance(telegram_chat_id, str):
-        await notify_answer(telegram_chat_id, assistant.content, settings)
 
 
 def normalize_chat_title(value: str, fallback: str) -> str:
@@ -2592,7 +2584,6 @@ async def fail_job(job_id: str, error: Exception) -> None:
         error_type=type(error).__name__,
         stage=job.kind,
     )
-    latency_trace.schedule_request_summary(job.client_request_id)
     schedule_watch_state_changed(settings)
 
 
@@ -2650,14 +2641,11 @@ async def process_next_job() -> bool:
 async def run_worker() -> None:
     await init_database()
     await recover_interrupted_jobs()
-    # Diagnostic-only background sender; a no-op unless explicitly enabled.
-    latency_trace.start_telegram_worker(settings)
     try:
         while True:
             if not await process_next_job():
                 await asyncio.sleep(settings.worker_poll_seconds)
     finally:
-        await latency_trace.stop_telegram_worker()
         await providers.aclose()
         await close_database()
 

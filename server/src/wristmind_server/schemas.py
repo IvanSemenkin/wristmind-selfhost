@@ -141,7 +141,6 @@ class ModeCreate(BaseModel):
     description: str = Field(default="", max_length=500)
     color: str = Field(default="#65F5C2", pattern=r"^#[0-9A-Fa-f]{6}$")
     icon: str = Field(default="spark", max_length=40)
-    telegram_emoji_id: str | None = Field(default=None, max_length=80)
     system_prompt: str = Field(default="", max_length=20_000)
     response_model_id: str = Field(max_length=160)
     hidden_on_watch: bool = False
@@ -152,7 +151,6 @@ class ModeUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=500)
     color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     icon: str | None = Field(default=None, max_length=40)
-    telegram_emoji_id: str | None = Field(default=None, max_length=80)
     system_prompt: str | None = Field(default=None, max_length=20_000)
     response_model_id: str | None = Field(default=None, max_length=160)
     hidden_on_watch: bool = False
@@ -164,7 +162,6 @@ class ModeResponse(ApiModel):
     description: str
     color: str
     icon: str
-    telegram_emoji_id: str | None
     system_prompt: str
     response_model_id: str
     hidden_on_watch: bool
@@ -373,6 +370,7 @@ class SetupStatusResponse(BaseModel):
     provider_ready: bool
     providers_with_keys: list[str]
     setup_required: bool
+    first_mode_id: str | None = None
 
 
 class ProviderKeyCheckRequest(BaseModel):
@@ -399,3 +397,10 @@ class ProviderKeySaveResponse(BaseModel):
     restart_required: bool
     restart_supported: bool
     message: str
+
+
+class SetupFirstChatResponse(BaseModel):
+    """The mode and chat the wizard created, so the panel can open them."""
+
+    mode_id: str
+    chat_id: str

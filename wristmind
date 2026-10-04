@@ -128,7 +128,7 @@ wm_manage_menu() {
     wm_menu_item 1 "Обновить до последней версии"
     wm_menu_item 2 "Проверить состояние (здоровье, логи, порты)"
     wm_menu_item 3 "Домен и HTTPS        → добавить / сменить / продлить"
-    wm_menu_item 4 "Ключи и провайдеры   → ключ модели, поиск, Telegram"
+    wm_menu_item 4 "Ключи и провайдеры   → ключ модели, веб-поиск"
     wm_menu_item 5 "Резервные копии      → создать / скачать / восстановить"
     wm_menu_item 6 "Перезапустить"
     wm_menu_item 7 "Остановить"
@@ -323,7 +323,6 @@ WristMind — установка и управление сервером.
   ./wristmind install --public-url=http://10.0.0.5:8080 --yes
   ./wristmind install --local     локальный просмотр: SQLite, моки, без домена
   ./wristmind install --with-search    дополнительно поднять приватный SearXNG
-  ./wristmind install --with-telegram  дополнительно поднять Telegram-бота
   ./wristmind tls --domain=example.com --email=you@example.com
                                   выпустить сертификат и включить HTTPS
   ./wristmind tls ... --staging   проверка на тестовом ACME-контуре

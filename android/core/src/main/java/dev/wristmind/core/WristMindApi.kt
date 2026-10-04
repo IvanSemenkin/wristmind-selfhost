@@ -37,9 +37,6 @@ class WristMindApi(
 
     suspend fun health(): Boolean = request("/health").optString("status") == "ok"
 
-    suspend fun uploadWearDiagnostics(lines: List<String>) {
-        request("/v1/diagnostics/wear", "POST", JSONObject().put("lines", JSONArray(lines)))
-    }
 
     suspend fun enrollAdmin(name: String, bootstrapSecret: String): DeviceToken {
         val body = JSONObject().put("name", name).put("kind", "PHONE")

@@ -56,7 +56,7 @@ AI-ассистент на часах Wear OS: голосовой чат, реж
 ```sh
 ./wristmind install --domain=example.com          # адрес для HTTPS
 ./wristmind install --public-url=http://203.0.113.9
-./wristmind install --with-search --with-telegram  # опциональные сервисы
+./wristmind install --with-search                # приватный веб-поиск
 ```
 
 Домен и HTTPS:

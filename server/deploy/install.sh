@@ -323,7 +323,6 @@ wm_public_ip() {
 #   --domain=HOST      implies https://HOST
 #   --local            "just look" mode: SQLite, mock providers, no db container
 #   --with-search      enable the private SearXNG profile
-#   --with-telegram    enable the Telegram notifications profile
 # Idempotent: an existing .env is preserved and compose only reconciles state.
 wm_install() {
     _wm_root="${1:?repo_root}"
@@ -333,14 +332,12 @@ wm_install() {
     _wm_public_explicit=0
     _wm_local=0
     _wm_with_search=0
-    _wm_with_telegram=0
     for _wm_arg in "$@"; do
         case "$_wm_arg" in
             --public-url=*) _wm_public="${_wm_arg#--public-url=}"; _wm_public_explicit=1 ;;
             --domain=*) _wm_domain="${_wm_arg#--domain=}"; _wm_public_explicit=1 ;;
             --local) _wm_local=1 ;;
             --with-search) _wm_with_search=1 ;;
-            --with-telegram) _wm_with_telegram=1 ;;
             *) wm_wait "неизвестный параметр проигнорирован: $_wm_arg" ;;
         esac
     done
@@ -447,7 +444,6 @@ wm_install() {
 
     _wm_profiles="--profile plain"
     [ "$_wm_with_search" -eq 1 ] && _wm_profiles="$_wm_profiles --profile search"
-    [ "$_wm_with_telegram" -eq 1 ] && _wm_profiles="$_wm_profiles --profile telegram"
 
     if [ "$_wm_local" -eq 0 ]; then
         wm_step "3/5 База данных"
@@ -467,12 +463,6 @@ wm_install() {
         wm_err "не удалось поднять api/worker/nginx. Последние строки:"
         wm_compose "$_wm_server" logs --tail=40 api worker nginx 2>&1 | sed 's/^/   /'
         return 1
-    fi
-    if [ "$_wm_with_telegram" -eq 1 ]; then
-        # shellcheck disable=SC2086
-        wm_compose_log "$_wm_server" $_wm_profiles up -d telegram || {
-            wm_err "профиль telegram не поднялся; он получит значение только после установки токена."
-        }
     fi
     wm_ok "api, worker и nginx запущены"
 

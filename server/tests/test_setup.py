@@ -4,7 +4,11 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from sqlalchemy import select
+
 from wristmind_server import main as main_module
+from wristmind_server.database import SessionFactory
+from wristmind_server.db_models import Job
 
 
 def test_fresh_install_requires_setup(client: TestClient):
@@ -171,3 +175,55 @@ def test_setup_complete_requires_auth_and_is_idempotent(client: TestClient, admi
     # Running the wizard again must not fail.
     assert client.post("/v1/setup/complete", headers=admin_headers).status_code == 204
     assert client.get("/v1/setup/status").json()["first_run_completed"] is True
+
+
+def test_setup_first_chat_is_idempotent(client: TestClient, admin_headers: dict):
+    first = client.post("/v1/setup/first-chat", headers=admin_headers)
+    assert first.status_code == 202, first.text
+    second = client.post("/v1/setup/first-chat", headers=admin_headers)
+    assert second.status_code == 202, second.text
+
+    # Reusing the same mode and chat is what keeps the wizard free of duplicates.
+    assert first.json()["mode_id"] == second.json()["mode_id"]
+    assert first.json()["chat_id"] == second.json()["chat_id"]
+
+    status = client.get("/v1/setup/status").json()
+    assert status["active_modes"] == 1
+    assert status["first_mode_id"] == first.json()["mode_id"]
+
+
+def test_setup_first_chat_requires_auth(client: TestClient):
+    assert client.post("/v1/setup/first-chat").status_code in {401, 403}
+
+
+def test_first_question_flows_through_the_created_chat(
+    client: TestClient, admin_headers: dict
+):
+    """The created chat is a real one: a question is accepted and answered."""
+    created = client.post("/v1/setup/first-chat", headers=admin_headers).json()
+    queued = client.post(
+        f"/v1/chats/{created['chat_id']}/messages",
+        headers=admin_headers,
+        json={"client_request_id": "setup-first-question", "text": "Скажи привет"},
+    )
+    assert queued.status_code == 202, queued.text
+    job_id = queued.json()["id"]
+
+    asyncio.run(_run_worker_until(job_id))
+
+    messages = client.get(
+        f"/v1/chats/{created['chat_id']}/messages", headers=admin_headers
+    ).json()
+    assistant = [item for item in messages if item["role"] == "assistant"]
+    assert assistant, messages
+    assert assistant[-1]["content"].strip()
+
+
+async def _run_worker_until(job_id: str) -> None:
+    """Drive the real worker once, the way the worker test module does."""
+    import wristmind_server.worker as worker_module
+
+    async with SessionFactory() as session:
+        job = await session.get(Job, job_id)
+        assert job is not None
+    await worker_module.process_next_job()

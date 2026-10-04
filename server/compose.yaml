@@ -7,21 +7,16 @@
 #   nginx   published entry point on ${WRISTMIND_HTTP_PORT:-8080}
 #
 # Everything the owner adds on top of that is an opt-in profile:
-#   vpn-routing        host routing rules for provider/Telegram egress
 #   search             private SearXNG instance for web search
-#   telegram           Telegram notifications bot
-#   public-gateway     reverse SSH tunnel to a public VPS
+#   plain              the plain-HTTP front end (used before a certificate)
 #
-# The three-container default starts with no profiles and no personal paths.
+# The default starts with no profiles and no personal paths.
 # Optional host files are referenced through ${...} variables and are mounted
 # with `required: false`, so a missing file never fails the stack up.
 
 name: ${WRISTMIND_COMPOSE_PROJECT:-wristmind}
 
 services:
-  # --------------------------------------------------------------------------
-  # Core (always on)
-  # --------------------------------------------------------------------------
   db:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
@@ -41,8 +36,6 @@ services:
     build:
       context: .
       network: ${WRISTMIND_BUILD_NETWORK:-default}
-    # Fixed tag so the opt-in `telegram` profile can reuse the same image
-    # instead of building a second copy.
     image: wristmind-api:local
     restart: unless-stopped
     env_file:
@@ -147,119 +140,6 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-
-  # --------------------------------------------------------------------------
-  # Profile: telegram — notifications bot
-  # --------------------------------------------------------------------------
-  telegram:
-    profiles: ["telegram"]
-    image: wristmind-api:local
-    build:
-      context: .
-      network: ${WRISTMIND_BUILD_NETWORK:-default}
-    command: ["python", "-m", "wristmind_server.telegram_polling"]
-    restart: unless-stopped
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      WRISTMIND_DATABASE_URL: ${WRISTMIND_DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-wristmind}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-wristmind}}
-      WRISTMIND_STORAGE_DIR: /data/private
-    volumes:
-      - private_files:/data/private
-    depends_on:
-      db:
-        condition: service_healthy
-        required: false
-
-  # --------------------------------------------------------------------------
-  # Profile: vpn-routing — provider/Telegram egress through a host VPN
-  # --------------------------------------------------------------------------
-  route-fix:
-    profiles: ["vpn-routing"]
-    image: alpine:3.22
-    network_mode: host
-    cap_add:
-      - NET_ADMIN
-    restart: unless-stopped
-    environment:
-      # Provider/Telegram egress exceptions are added for this address; an
-      # empty value makes the rule a no-op instead of touching a fixed host.
-      WRISTMIND_TUNNEL_HOST: ${WRISTMIND_TUNNEL_HOST:-}
-    command:
-      - sh
-      - -c
-      - >-
-        apk add --no-cache iproute2 iptables ipset >/dev/null &&
-        while true; do
-          ip rule add priority 8972 to "$${WRISTMIND_TUNNEL_HOST}" lookup main 2>/dev/null || true;
-          ip rule del priority 8973 2>/dev/null || true;
-          ip rule add priority 8973 fwmark 0x1 lookup "$${WRISTMIND_OPENROUTER_VPN_TABLE:-51821}" 2>/dev/null || true;
-          ipset create wristmind_openrouter hash:ip -exist;
-          ipset flush wristmind_openrouter;
-          for address in $$(getent ahostsv4 openrouter.ai | awk '{print $$1}' | sort -u); do ipset add wristmind_openrouter "$$address" -exist; done;
-          ipset create wristmind_telegram hash:ip -exist;
-          ipset flush wristmind_telegram;
-          for address in $$(getent ahostsv4 api.telegram.org | awk '{print $$1}' | sort -u); do ipset add wristmind_telegram "$$address" -exist; done;
-          iptables -t mangle -C PREROUTING -s 172.30.40.0/24 -m set --match-set wristmind_openrouter dst -j MARK --set-mark 0x1 2>/dev/null || iptables -t mangle -A PREROUTING -s 172.30.40.0/24 -m set --match-set wristmind_openrouter dst -j MARK --set-mark 0x1;
-          iptables -t nat -C POSTROUTING -s 172.30.40.0/24 -m set --match-set wristmind_openrouter dst -o "$${WRISTMIND_OPENROUTER_VPN_INTERFACE:-awg-dm}" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 172.30.40.0/24 -m set --match-set wristmind_openrouter dst -o "$${WRISTMIND_OPENROUTER_VPN_INTERFACE:-awg-dm}" -j MASQUERADE;
-          iptables -t mangle -C PREROUTING -s 172.30.40.0/24 -m set --match-set wristmind_telegram dst -j MARK --set-mark 0x1 2>/dev/null || iptables -t mangle -A PREROUTING -s 172.30.40.0/24 -m set --match-set wristmind_telegram dst -j MARK --set-mark 0x1;
-          iptables -t nat -C POSTROUTING -s 172.30.40.0/24 -m set --match-set wristmind_telegram dst -o "$${WRISTMIND_OPENROUTER_VPN_INTERFACE:-awg-dm}" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 172.30.40.0/24 -m set --match-set wristmind_telegram dst -o "$${WRISTMIND_OPENROUTER_VPN_INTERFACE:-awg-dm}" -j MASQUERADE;
-          ip rule add priority 8974 from 172.30.41.0/24 lookup main 2>/dev/null || true;
-          ip rule add priority 8975 to 172.30.40.0/24 lookup main 2>/dev/null || true;
-          ip rule add priority 8976 from 172.30.40.0/24 lookup main 2>/dev/null || true;
-          sleep 300;
-        done
-
-  # --------------------------------------------------------------------------
-  # Profile: public-gateway — reverse SSH tunnel to a public VPS
-  # --------------------------------------------------------------------------
-  vps-tunnel:
-    profiles: ["public-gateway"]
-    image: alpine:3.22
-    network_mode: host
-    restart: unless-stopped
-    environment:
-      # Safe default keeps a bare `docker compose config` working; the
-      # container refuses to start without a real host.
-      WRISTMIND_TUNNEL_HOST: ${WRISTMIND_TUNNEL_HOST:-}
-      WRISTMIND_TUNNEL_PORT: ${WRISTMIND_TUNNEL_PORT:-22}
-      WRISTMIND_TUNNEL_USER: ${WRISTMIND_TUNNEL_USER:-root}
-      WRISTMIND_TUNNEL_REMOTE_PORT: ${WRISTMIND_TUNNEL_REMOTE_PORT:-18080}
-      WRISTMIND_TUNNEL_LOCAL_PORT: ${WRISTMIND_TUNNEL_LOCAL_PORT:-8080}
-    volumes:
-      - type: bind
-        source: ${WRISTMIND_TUNNEL_KEY_PATH:-./secrets/vps-tunnel-key}
-        target: /root/.ssh/id_ed25519
-        read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ${WRISTMIND_TUNNEL_KNOWN_HOSTS_PATH:-./secrets/known_hosts}
-        target: /root/.ssh/known_hosts
-        read_only: true
-        bind:
-          create_host_path: false
-    command:
-      - sh
-      - -ec
-      - >-
-        [ -n "$${WRISTMIND_TUNNEL_HOST}" ] || {
-          echo "WRISTMIND_TUNNEL_HOST is empty: set it before enabling the public-gateway profile" >&2;
-          exit 1;
-        };
-        apk add --no-cache openssh-client >/dev/null &&
-        exec ssh -N
-        -i /root/.ssh/id_ed25519
-        -o BatchMode=yes
-        -o ExitOnForwardFailure=yes
-        -o ServerAliveInterval=20
-        -o ServerAliveCountMax=3
-        -o StrictHostKeyChecking=yes
-        -p "$${WRISTMIND_TUNNEL_PORT}"
-        -R "127.0.0.1:$${WRISTMIND_TUNNEL_REMOTE_PORT}:127.0.0.1:$${WRISTMIND_TUNNEL_LOCAL_PORT}"
-        "$${WRISTMIND_TUNNEL_USER}@$${WRISTMIND_TUNNEL_HOST}"
-
 volumes:
   postgres_data:
   private_files:

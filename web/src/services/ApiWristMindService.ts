@@ -37,7 +37,7 @@ import type {
   SystemHealth,
 } from '@/types';
 
-type ApiMode = Omit<Mode, 'color' | 'icon'> & { color: string; icon: string; telegram_emoji_id?: string | null };
+type ApiMode = Omit<Mode, 'color' | 'icon'> & { color: string; icon: string };
 type ApiJob = { id: string; status: string; result: Record<string, unknown>; error: string | null };
 type ApiMessage = Omit<Message, 'status' | 'usage' | 'timings' | 'sources' | 'phases'> & {
   status: string;
@@ -213,7 +213,7 @@ export class ApiWristMindService implements WristMindService {
   }
 
   private mapMode(value: ApiMode): Mode {
-    return { ...value, color: modeColor(value.color), icon: value.icon || null, telegram_emoji_id: value.telegram_emoji_id ?? null, deleted_at: value.deleted_at ?? null };
+    return { ...value, color: modeColor(value.color), icon: value.icon || null, deleted_at: value.deleted_at ?? null };
   }
 
   private mapChat(value: any): Chat {

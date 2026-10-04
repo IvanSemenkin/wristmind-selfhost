@@ -281,7 +281,6 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
     private var activeSubmitJob: CoroutineJob? = null
     private var cancelRequestedFor: String? = null
     private var cancellingRequest: String? = null
-    private var diagnosticsExportRunning = false
     val state: StateFlow<WearState> = mutableState
 
     init {
@@ -716,29 +715,6 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
     private fun logSendTiming(line: String) {
         Log.i(TAG, line)
         WearDiagnosticLog.record("send", line)
-    }
-
-    fun exportRecentDiagnostics() {
-        if (diagnosticsExportRunning) return
-        val lines = WearDiagnosticLog.snapshot()
-        if (lines.isEmpty() || token.isBlank()) {
-            Toast.makeText(getApplication(), "Нет логов для отправки", Toast.LENGTH_SHORT).show()
-            return
-        }
-        diagnosticsExportRunning = true
-        viewModelScope.launch {
-            try {
-                withTimeout(35_000L) {
-                    WristMindApi(BuildConfig.WRISTMIND_BASE_URL, token).uploadWearDiagnostics(lines)
-                }
-                Toast.makeText(getApplication(), "Логи отправлены", Toast.LENGTH_SHORT).show()
-            } catch (error: Exception) {
-                Log.w(TAG, "Wear diagnostics export failed: ${error.javaClass.simpleName}")
-                Toast.makeText(getApplication(), "Не удалось отправить логи", Toast.LENGTH_SHORT).show()
-            } finally {
-                diagnosticsExportRunning = false
-            }
-        }
     }
 
     fun selectAnswer(messageId: String) {

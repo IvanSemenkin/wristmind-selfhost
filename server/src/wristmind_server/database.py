@@ -73,8 +73,6 @@ async def init_database() -> None:
             await connection.execute(
                 text("ALTER TABLE modes ADD COLUMN IF NOT EXISTS hidden_on_watch BOOLEAN NOT NULL DEFAULT FALSE")
             )
-            await connection.execute(text("ALTER TABLE modes ADD COLUMN IF NOT EXISTS telegram_emoji_id VARCHAR(80)"))
-            await connection.execute(text("ALTER TABLE telegram_accounts ADD COLUMN IF NOT EXISTS emoji_target VARCHAR(120)"))
             await connection.execute(
                 text("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS history_message_limit INTEGER NOT NULL DEFAULT 12")
             )
@@ -186,11 +184,6 @@ async def init_database() -> None:
                 await connection.execute(
                     text("ALTER TABLE modes ADD COLUMN hidden_on_watch BOOLEAN NOT NULL DEFAULT 0")
                 )
-            if not any(column["name"] == "telegram_emoji_id" for column in columns):
-                await connection.execute(text("ALTER TABLE modes ADD COLUMN telegram_emoji_id TEXT"))
-            telegram_columns = (await connection.execute(text("PRAGMA table_info(telegram_accounts)"))).mappings().all()
-            if telegram_columns and not any(column["name"] == "emoji_target" for column in telegram_columns):
-                await connection.execute(text("ALTER TABLE telegram_accounts ADD COLUMN emoji_target TEXT"))
             settings_columns = (await connection.execute(text("PRAGMA table_info(app_settings)"))).mappings().all()
             if not any(column["name"] == "history_message_limit" for column in settings_columns):
                 await connection.execute(

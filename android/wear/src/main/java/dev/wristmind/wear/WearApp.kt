@@ -194,7 +194,6 @@ fun WristMindWearApp(
                         },
                         onDeleteChat = vm::deleteChat,
                         onServerStatusCheck = vm::refreshServerConnectionStatus,
-                        onDiagnosticExport = vm::exportRecentDiagnostics,
                     )
                 }
                 composable(ROUTE_MODES) {
@@ -361,14 +360,11 @@ private fun HistoryScreen(
     onChat: (String) -> Unit,
     onDeleteChat: (String) -> Unit,
     onServerStatusCheck: () -> Unit,
-    onDiagnosticExport: () -> Unit,
 ) {
     val listState = rememberTransformingLazyColumnState()
     val transformationSpec = rememberTransformationSpec()
     var deleteActionChatId by remember { mutableStateOf<String?>(null) }
     var deleteActionBounds by remember { mutableStateOf<Rect?>(null) }
-    val rapidTaps = remember { RapidTapTrigger() }
-    val currentDiagnosticExport by rememberUpdatedState(onDiagnosticExport)
     LaunchedEffect(listState.isScrollInProgress) {
         if (listState.isScrollInProgress) deleteActionChatId = null
     }
@@ -412,14 +408,7 @@ private fun HistoryScreen(
                         horizontalArrangement = Arrangement.spacedBy(7.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            "История",
-                            modifier = Modifier.pointerInput(Unit) {
-                                detectTapGestures(onTap = {
-                                    if (rapidTaps.onTap(SystemClock.uptimeMillis())) currentDiagnosticExport()
-                                })
-                            },
-                        )
+                        Text("История")
                         Box(
                             modifier = Modifier
                                 .size(8.dp)

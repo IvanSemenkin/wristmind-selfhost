@@ -38,8 +38,6 @@ from .db_models import (
     PushRegistration,
     PromptOverride,
     ReferencedWebSource,
-    TelegramAccount,
-    TelegramEmojiDraft,
     User,
     utcnow,
 )
@@ -80,7 +78,6 @@ from .schemas import (
     PushTokenUpdate,
     PromptRecord,
     PromptUpdate,
-    WearDiagnosticsUpload,
     QuickChatCreate,
     TranscriptionResponse,
     CurrentUserResponse,
@@ -88,6 +85,7 @@ from .schemas import (
     ProviderKeyCheckResponse,
     ProviderKeySaveRequest,
     ProviderKeySaveResponse,
+    SetupFirstChatResponse,
     SetupStatusResponse,
 )
 from .fallback_auth import issue_fallback_ticket
@@ -96,13 +94,18 @@ from .providers import ProviderError, ProviderRouter
 from .prompt_registry import DEFAULT_TEMPLATES, PROMPT_LABELS, required_markers
 from .push import schedule_watch_state_changed
 from .security import admin_device, client_ip, current_device, hash_secret, issue_device_token, issue_pairing_code
-from .telegram_bot import bot_is_enabled, handle_update
 
 
 logger = logging.getLogger("uvicorn.error")
 # Matches a container id inside /proc/self/cgroup or /etc/hostname, so the API
 # can ask Docker to restart itself after an environment change.
 _CONTAINER_ID_RE = re.compile(r"([0-9a-f]{12,64})")
+
+SETUP_FIRST_MODE_NAME = "Первый режим"
+SETUP_FIRST_MODE_PROMPT = (
+    "Ты — WristMind. Отвечай на языке пользователя кратко и по делу. "
+    "Не выдумывай факты; если не уверен — скажи."
+)
 
 QUICK_CHAT_MODE_NAME = "Быстрый чат"
 QUICK_CHAT_MODE_DESCRIPTION = "Школа, быт, готовка и любые общие вопросы."
@@ -134,14 +137,9 @@ async def lifespan(_: FastAPI):
         await session.execute(update(Chat).where(Chat.user_id.in_(legacy_users)).values(user_id=owner.id))
         await session.execute(update(KnowledgeSource).where(KnowledgeSource.user_id.is_(None)).values(user_id=owner.id))
         await session.execute(update(KnowledgeSource).where(KnowledgeSource.user_id.in_(legacy_users)).values(user_id=owner.id))
-        await session.execute(update(TelegramAccount).where(TelegramAccount.user_id.in_(legacy_users)).values(user_id=owner.id))
-        await session.execute(update(TelegramEmojiDraft).where(TelegramEmojiDraft.user_id.in_(legacy_users)).values(user_id=owner.id))
         await session.execute(update(User).where(User.id != owner.id, User.deleted_at.is_(None)).values(deleted_at=utcnow()))
         await session.commit()
-    # Diagnostic-only live latency feed; a no-op unless explicitly enabled.
-    latency_trace.start_telegram_worker(get_settings())
     yield
-    await latency_trace.stop_telegram_worker()
     await close_database()
 
 
@@ -169,25 +167,6 @@ def valid_wear_diagnostic_line(line: str) -> bool:
     return all(32 <= ord(char) < 127 for char in line) and parts[2].startswith(
         prefixes.get(parts[1], ())
     )
-
-
-@app.post("/v1/diagnostics/wear")
-async def upload_wear_diagnostics(
-    request: WearDiagnosticsUpload,
-    device: Device = Depends(current_device),
-) -> dict[str, int]:
-    if device.kind != "WATCH":
-        raise HTTPException(status_code=403, detail="Watch device required")
-    if not latency_trace.telegram_enabled():
-        raise HTTPException(status_code=503, detail="Diagnostics Telegram is unavailable")
-    if any(not valid_wear_diagnostic_line(line) for line in request.lines):
-        raise HTTPException(status_code=422, detail="Invalid diagnostic line")
-    try:
-        await latency_trace.send_wear_diagnostics(request.lines, device.id)
-    except Exception as error:
-        logger.warning("Wear diagnostic export failed: %s", type(error).__name__)
-        raise HTTPException(status_code=502, detail="Diagnostic delivery failed") from None
-    return {"sent": len(request.lines)}
 
 
 def chat_response(chat: Chat) -> ChatResponse:
@@ -334,6 +313,18 @@ async def setup_status(
     provider_ready = settings.mock_providers or bool(with_keys)
     instance_claimed = admin_devices > 0
 
+    # The wizard offers to finish setup on an empty install: report whether a
+    # first mode already exists instead of guessing on the client.
+    first_mode_id: str | None = None
+    if database_ok:
+        try:
+            first_mode_id = await session.scalar(
+                select(Mode.id).where(Mode.deleted_at.is_(None)).order_by(Mode.created_at).limit(1)
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("setup status could not read the first mode")
+            first_mode_id = None
+
     # A one-time marker in app_settings stops the wizard from reappearing.
     # If the row is missing this reports "not completed", never an error.
     first_run_completed = False
@@ -356,7 +347,58 @@ async def setup_status(
         provider_ready=provider_ready,
         providers_with_keys=with_keys,
         setup_required=not instance_claimed,
+        first_mode_id=first_mode_id,
     )
+
+
+@app.post("/v1/setup/first-chat", response_model=SetupFirstChatResponse, status_code=202)
+async def setup_first_chat(
+    device: Device = Depends(current_device),
+    session: AsyncSession = Depends(get_session),
+) -> SetupFirstChatResponse:
+    """Create the first mode and chat on an empty install.
+
+    Idempotent by name: running it again reuses the existing mode, so the
+    wizard never produces duplicates. No knowledge source is attached; the
+    owner adds those in the usual knowledge section.
+    """
+    owner = await owner_for_device(device, session)
+    mode = await session.scalar(
+        select(Mode).where(Mode.name == SETUP_FIRST_MODE_NAME, Mode.deleted_at.is_(None))
+    )
+    if mode is None:
+        settings_row = await session.get(AppSettings, 1)
+        model_id = settings_row.default_model_id if settings_row else settings.default_model_id
+        mode = Mode(
+            name=SETUP_FIRST_MODE_NAME,
+            description="Создан мастером первого запуска. Переименуйте или удалите.",
+            color="#65F5C2",
+            icon="sparkles",
+            system_prompt=SETUP_FIRST_MODE_PROMPT,
+            response_model_id=model_id,
+            user_id=owner.id,
+        )
+        session.add(mode)
+        await session.flush()
+
+    chat = await session.scalar(
+        select(Chat)
+        .where(Chat.mode_id == mode.id, Chat.user_id == owner.id, Chat.deleted_at.is_(None))
+        .order_by(Chat.created_at)
+        .limit(1)
+    )
+    if chat is None:
+        chat = Chat(
+            mode_id=mode.id,
+            mode_name=mode.name,
+            title="Первый запуск",
+            user_id=owner.id,
+        )
+        session.add(chat)
+        await session.flush()
+
+    await session.commit()
+    return SetupFirstChatResponse(mode_id=mode.id, chat_id=chat.id)
 
 
 @app.post("/v1/setup/complete", status_code=204)
@@ -526,21 +568,6 @@ async def _restart_self_container() -> bool:
         except httpx.HTTPError:
             return False
     return response.status_code in {204, 304}
-
-
-@app.post("/v1/telegram/webhook", status_code=204)
-async def telegram_webhook(
-    update: dict[str, object],
-    secret: str | None = Header(None, alias="X-Telegram-Bot-Api-Secret-Token"),
-    settings: Settings = Depends(get_settings),
-) -> None:
-    """Accept a Telegram update quickly; Bot API processing continues in background."""
-    if not bot_is_enabled(settings):
-        raise HTTPException(status_code=404, detail="Telegram bot is disabled")
-    expected = settings.telegram_webhook_secret.get_secret_value() if settings.telegram_webhook_secret else ""
-    if expected and not secret or expected and not secrets.compare_digest(secret, expected):
-        raise HTTPException(status_code=401, detail="Invalid Telegram webhook secret")
-    asyncio.create_task(handle_update(update, settings))
 
 
 @app.get("/v1/dashboard/stats", response_model=DashboardStatsResponse)
@@ -1661,7 +1688,6 @@ async def sync_fallback_message(
         response_chars=len(assistant_message.content),
         stage="vps_fallback_sync",
     )
-    latency_trace.schedule_request_summary(request.request_id)
     schedule_watch_state_changed(get_settings())
     return {"status": "synced"}
 
@@ -1674,9 +1700,9 @@ async def record_watch_latency(
     """Diagnostic-only sink for watch-side latency events.
 
     Additive endpoint: it records one safe event (identifiers, timings, sizes)
-    into the latency trace and its optional Telegram feed. It never reads or
-    writes pipeline state, always answers 204, and swallows all failures so a
-    watch can fire it without any chance of affecting the answer.
+    into the latency trace. It never reads or writes pipeline state, always
+    answers 204, and swallows all failures so a watch can fire it without any
+    chance of affecting the answer.
     """
     try:
         event = str(request.get("event") or "")[:64]
