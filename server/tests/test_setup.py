@@ -1,5 +1,6 @@
 """First-run setup endpoints: honest installation state and key handling."""
 
+import asyncio
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -38,6 +39,7 @@ def test_fresh_install_requires_setup(client: TestClient):
         "provider_ready",
         "providers_with_keys",
         "setup_required",
+        "first_mode_id",
     }
 
 

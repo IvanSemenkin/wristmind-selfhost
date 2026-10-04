@@ -355,6 +355,7 @@ async def setup_status(
 async def setup_first_chat(
     device: Device = Depends(current_device),
     session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
 ) -> SetupFirstChatResponse:
     """Create the first mode and chat on an empty install.
 
@@ -376,7 +377,6 @@ async def setup_first_chat(
             icon="sparkles",
             system_prompt=SETUP_FIRST_MODE_PROMPT,
             response_model_id=model_id,
-            user_id=owner.id,
         )
         session.add(mode)
         await session.flush()
@@ -390,7 +390,7 @@ async def setup_first_chat(
     if chat is None:
         chat = Chat(
             mode_id=mode.id,
-            mode_name=mode.name,
+            mode_name_snapshot=mode.name,
             title="Первый запуск",
             user_id=owner.id,
         )
