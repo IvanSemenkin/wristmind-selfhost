@@ -1,23 +1,17 @@
 #!/usr/bin/env sh
+# Generate server/.env with fresh secrets.
+#
+# Kept for direct use on an existing install; `./wristmind install` calls the
+# same implementation. An existing real .env is never rewritten.
+#
+#   sh server/deploy/initialize-env.sh [public_base_url]
+
 set -eu
 
-if [ -e .env ] && ! grep -q "generate-a-long-random-value" .env; then
-    echo ".env already exists; leaving it unchanged"
-    exit 0
-fi
+wm_script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+wm_server_dir="$(dirname -- "$wm_script_dir")"
 
-umask 077
-cp .env.production.example .env
-wm_pg_secret="$(openssl rand -hex 24)"
-wm_bootstrap_secret="$(openssl rand -hex 32)"
-wm_pepper_secret="$(openssl rand -hex 32)"
-wm_fallback_secret="$(openssl rand -hex 32)"
+# shellcheck source=env.sh
+. "$wm_script_dir/env.sh"
 
-sed -i \
-    -e "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${wm_pg_secret}/" \
-    -e "s/^WRISTMIND_BOOTSTRAP_SECRET=.*/WRISTMIND_BOOTSTRAP_SECRET=${wm_bootstrap_secret}/" \
-    -e "s/^WRISTMIND_TOKEN_PEPPER=.*/WRISTMIND_TOKEN_PEPPER=${wm_pepper_secret}/" \
-    -e "s/^WRISTMIND_FALLBACK_TICKET_SECRET=.*/WRISTMIND_FALLBACK_TICKET_SECRET=${wm_fallback_secret}/" \
-    .env
-chmod 600 .env
-echo "Created .env with generated secrets"
+wm_env_create "$wm_server_dir" "${1-}"

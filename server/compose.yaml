@@ -1,19 +1,184 @@
-name: wristmind-v2
+# WristMind server stack.
+#
+# Default install (nothing but `docker compose up -d`):
+#   db      PostgreSQL 16 + pgvector
+#   api     FastAPI (REST + SSE)
+#   worker  queued ANSWER / INGEST jobs
+#   nginx   published entry point on ${WRISTMIND_HTTP_PORT:-8080}
+#
+# Everything the owner adds on top of that is an opt-in profile:
+#   vpn-routing        host routing rules for provider/Telegram egress
+#   search             private SearXNG instance for web search
+#   telegram           Telegram notifications bot
+#   public-gateway     reverse SSH tunnel to a public VPS
+#
+# The three-container default starts with no profiles and no personal paths.
+# Optional host files are referenced through ${...} variables and are mounted
+# with `required: false`, so a missing file never fails the stack up.
+
+name: ${WRISTMIND_COMPOSE_PROJECT:-wristmind}
 
 services:
+  # --------------------------------------------------------------------------
+  # Core (always on)
+  # --------------------------------------------------------------------------
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-wristmind}
+      POSTGRES_USER: ${POSTGRES_USER:-wristmind}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wristmind} -d ${POSTGRES_DB:-wristmind}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      network: ${WRISTMIND_BUILD_NETWORK:-default}
+    # Fixed tag so the opt-in `telegram` profile can reuse the same image
+    # instead of building a second copy.
+    image: wristmind-api:local
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      WRISTMIND_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-wristmind}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-wristmind}
+      WRISTMIND_STORAGE_DIR: /data/private
+      # Set only when the optional Firebase service account key is present.
+      WRISTMIND_FIREBASE_CREDENTIALS_PATH: ${WRISTMIND_FIREBASE_CONTAINER_PATH:-/run/secrets/firebase-admin.json}
+    volumes:
+      - private_files:/data/private
+      - type: bind
+        source: ${WRISTMIND_FIREBASE_KEY_PATH:-./secrets/firebase-admin.json}
+        target: /run/secrets/firebase-admin.json
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  worker:
+    build:
+      context: .
+      network: ${WRISTMIND_BUILD_NETWORK:-default}
+    command: ["python", "-m", "wristmind_server.worker"]
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      WRISTMIND_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-wristmind}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-wristmind}
+      WRISTMIND_STORAGE_DIR: /data/private
+      # Search is optional; the worker degrades gracefully when this is unreachable.
+      WRISTMIND_SEARXNG_URL: ${WRISTMIND_SEARXNG_URL:-}
+      WRISTMIND_FIREBASE_CREDENTIALS_PATH: ${WRISTMIND_FIREBASE_CONTAINER_PATH:-/run/secrets/firebase-admin.json}
+    volumes:
+      - private_files:/data/private
+      - type: bind
+        source: ${WRISTMIND_FIREBASE_KEY_PATH:-./secrets/firebase-admin.json}
+        target: /run/secrets/firebase-admin.json
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      db:
+        condition: service_healthy
+      # SearXNG lives behind the opt-in `search` profile. `required: false`
+      # keeps a self-host without web search from failing to start.
+      searxng:
+        condition: service_started
+        required: false
+
+  nginx:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    ports:
+      - "${WRISTMIND_HTTP_PORT:-8080}:8080"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # --------------------------------------------------------------------------
+  # Profile: search — private SearXNG used for web answers
+  # --------------------------------------------------------------------------
+  searxng:
+    profiles: ["search"]
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    environment:
+      # Compose interpolates this file even when the `search` profile is off,
+      # so the variable needs a harmless default here. Enabling the `search`
+      # profile without a real value leaves SearXNG without a usable secret;
+      # `./wristmind` sets one when the profile is selected.
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-}
+    volumes:
+      - ./deploy/searxng:/etc/searxng:ro
+    networks:
+      - search
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  # --------------------------------------------------------------------------
+  # Profile: telegram — notifications bot
+  # --------------------------------------------------------------------------
+  telegram:
+    profiles: ["telegram"]
+    image: wristmind-api:local
+    build:
+      context: .
+      network: ${WRISTMIND_BUILD_NETWORK:-default}
+    command: ["python", "-m", "wristmind_server.telegram_polling"]
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      WRISTMIND_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-wristmind}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-wristmind}
+      WRISTMIND_STORAGE_DIR: /data/private
+    volumes:
+      - private_files:/data/private
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # --------------------------------------------------------------------------
+  # Profile: vpn-routing — provider/Telegram egress through a host VPN
+  # --------------------------------------------------------------------------
   route-fix:
+    profiles: ["vpn-routing"]
     image: alpine:3.22
     network_mode: host
     cap_add:
       - NET_ADMIN
     restart: unless-stopped
+    environment:
+      # Provider/Telegram egress exceptions are added for this address; an
+      # empty value makes the rule a no-op instead of touching a fixed host.
+      WRISTMIND_TUNNEL_HOST: ${WRISTMIND_TUNNEL_HOST:-}
     command:
       - sh
       - -c
       - >-
         apk add --no-cache iproute2 iptables ipset >/dev/null &&
         while true; do
-          ip rule add priority 8972 to "$${WRISTMIND_TUNNEL_HOST:-88.151.114.29}" lookup main 2>/dev/null || true;
+          ip rule add priority 8972 to "$${WRISTMIND_TUNNEL_HOST}" lookup main 2>/dev/null || true;
           ip rule del priority 8973 2>/dev/null || true;
           ip rule add priority 8973 fwmark 0x1 lookup "$${WRISTMIND_OPENROUTER_VPN_TABLE:-51821}" 2>/dev/null || true;
           ipset create wristmind_openrouter hash:ip -exist;
@@ -32,139 +197,43 @@ services:
           sleep 300;
         done
 
-  db:
-    image: pgvector/pgvector:pg16
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: wristmind
-      POSTGRES_USER: wristmind
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U wristmind -d wristmind"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-
-  api:
-    # Builds run on the host network on purpose: this host forces egress
-    # through the AmneziaWG VPN (MTU 1280), while the default bridge is 1500,
-    # so packages fetched from the build container are silently dropped.
-    build:
-      context: .
-      network: host
-    restart: unless-stopped
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      WRISTMIND_DATABASE_URL: postgresql+asyncpg://wristmind:${POSTGRES_PASSWORD}@db:5432/wristmind
-      WRISTMIND_STORAGE_DIR: /data/private
-      # The host key is mounted read-only below; applications inside the container
-      # must use the container path rather than the host path from .env.
-      WRISTMIND_FIREBASE_CREDENTIALS_PATH: /run/secrets/firebase-admin.json
-    volumes:
-      - private_files:/data/private
-      - /home/ivan/.config/wristmind/firebase-admin.json:/run/secrets/firebase-admin.json:ro
-    depends_on:
-      db:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-
-  searxng:
-    image: searxng/searxng:latest
-    restart: unless-stopped
-    environment:
-      SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET}
-    volumes:
-      - ./deploy/searxng:/etc/searxng:ro
-    networks:
-      - search
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-
-  worker:
-    build:
-      context: .
-      network: host
-    command: ["python", "-m", "wristmind_server.worker"]
-    restart: unless-stopped
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      WRISTMIND_DATABASE_URL: postgresql+asyncpg://wristmind:${POSTGRES_PASSWORD}@db:5432/wristmind
-      WRISTMIND_STORAGE_DIR: /data/private
-      WRISTMIND_FIREBASE_CREDENTIALS_PATH: /run/secrets/firebase-admin.json
-      WRISTMIND_SEARXNG_URL: http://searxng:8080
-    volumes:
-      - private_files:/data/private
-      - /home/ivan/.config/wristmind/firebase-admin.json:/run/secrets/firebase-admin.json:ro
-    depends_on:
-      db:
-        condition: service_healthy
-      searxng:
-        condition: service_started
-    networks:
-      - default
-      - search
-
-  telegram-bot:
-    image: wristmind-v2-api
-    command: ["python", "-m", "wristmind_server.telegram_polling"]
-    restart: unless-stopped
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      WRISTMIND_DATABASE_URL: postgresql+asyncpg://wristmind:${POSTGRES_PASSWORD}@db:5432/wristmind
-      WRISTMIND_STORAGE_DIR: /data/private
-    volumes:
-      - private_files:/data/private
-    depends_on:
-      db:
-        condition: service_healthy
-      route-fix:
-        condition: service_started
-
-  nginx:
-    image: nginx:1.28-alpine
-    restart: unless-stopped
-    ports:
-      - "80:8080"
-    volumes:
-      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    depends_on:
-      api:
-        condition: service_healthy
-      route-fix:
-        condition: service_started
-
+  # --------------------------------------------------------------------------
+  # Profile: public-gateway — reverse SSH tunnel to a public VPS
+  # --------------------------------------------------------------------------
   vps-tunnel:
-    image: alpine:3.22
     profiles: ["public-gateway"]
+    image: alpine:3.22
     network_mode: host
     restart: unless-stopped
     environment:
-      WRISTMIND_TUNNEL_HOST: ${WRISTMIND_TUNNEL_HOST:-88.151.114.29}
+      # Safe default keeps a bare `docker compose config` working; the
+      # container refuses to start without a real host.
+      WRISTMIND_TUNNEL_HOST: ${WRISTMIND_TUNNEL_HOST:-}
       WRISTMIND_TUNNEL_PORT: ${WRISTMIND_TUNNEL_PORT:-22}
       WRISTMIND_TUNNEL_USER: ${WRISTMIND_TUNNEL_USER:-root}
       WRISTMIND_TUNNEL_REMOTE_PORT: ${WRISTMIND_TUNNEL_REMOTE_PORT:-18080}
-      WRISTMIND_TUNNEL_LOCAL_PORT: ${WRISTMIND_TUNNEL_LOCAL_PORT:-80}
+      WRISTMIND_TUNNEL_LOCAL_PORT: ${WRISTMIND_TUNNEL_LOCAL_PORT:-8080}
     volumes:
-      - ${WRISTMIND_TUNNEL_KEY_PATH:-/home/ivan/.ssh/wristmind-vps-tunnel}:/root/.ssh/id_ed25519:ro
-      - ${WRISTMIND_TUNNEL_KNOWN_HOSTS_PATH:-/home/ivan/.ssh/known_hosts}:/root/.ssh/known_hosts:ro
+      - type: bind
+        source: ${WRISTMIND_TUNNEL_KEY_PATH:-./secrets/vps-tunnel-key}
+        target: /root/.ssh/id_ed25519
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${WRISTMIND_TUNNEL_KNOWN_HOSTS_PATH:-./secrets/known_hosts}
+        target: /root/.ssh/known_hosts
+        read_only: true
+        bind:
+          create_host_path: false
     command:
       - sh
       - -ec
       - >-
+        [ -n "$${WRISTMIND_TUNNEL_HOST}" ] || {
+          echo "WRISTMIND_TUNNEL_HOST is empty: set it before enabling the public-gateway profile" >&2;
+          exit 1;
+        };
         apk add --no-cache openssh-client >/dev/null &&
         exec ssh -N
         -i /root/.ssh/id_ed25519
