@@ -120,8 +120,8 @@ fi
 if [[ -n $WM_DOMAIN && ! $WM_DOMAIN =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]]; then
   echo 'Некорректный домен: укажите имя без протокола, порта и пути.' >&2; exit 2
 fi
-if [[ -n $WM_ACCESS_MODE && $WM_ACCESS_MODE != local && $WM_ACCESS_MODE != domain && $WM_ACCESS_MODE != tunnel && $WM_ACCESS_MODE != check ]]; then
-  echo 'Режим доступа: local, domain, tunnel или check.' >&2; exit 2
+if [[ -n $WM_ACCESS_MODE && $WM_ACCESS_MODE != local && $WM_ACCESS_MODE != http && $WM_ACCESS_MODE != domain && $WM_ACCESS_MODE != tunnel && $WM_ACCESS_MODE != check ]]; then
+  echo 'Режим доступа: local, http, domain, tunnel или check.' >&2; exit 2
 fi
 if [[ $WM_COMMAND == install && -n $WM_DOMAIN && ${WM_ACCESS_MODE:-domain} == domain && -z $WM_EXPECTED_IP ]]; then
   echo 'Для установки с доменом укажите --expected-ip. Можно установить без домена и настроить access позже.' >&2; exit 2
@@ -314,7 +314,7 @@ menu() {
     ui_item 2 'Показать состояние'
     ui_item 3 'Установить / продолжить установку' "$WM_GREEN"
     ui_section 'ДОСТУП И ОБСЛУЖИВАНИЕ'
-    ui_item 4 'Домен / HTTPS / туннель'
+    ui_item 4 'Доступ по IP / HTTPS / туннель'
     ui_item 5 'Обновления и резервные копии' "$WM_AMBER"
     ui_item 6 'Ссылка первого входа'
     ui_section 'ДОПОЛНИТЕЛЬНЫЕ ВОЗМОЖНОСТИ'

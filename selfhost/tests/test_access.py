@@ -35,6 +35,22 @@ class AccessTest(unittest.TestCase):
     def domain(self):
         return access.configure(self.target, 'domain', 'ai.example.org', '203.0.113.10')
 
+    def test_http_ip_exposes_only_panel_port_and_preserves_secrets(self):
+        self.domain()
+        self.assertEqual(access.configure(self.target, 'http', expected_ip='203.0.113.10'), 0)
+        values = installer.validate_saved(self.target, installer.manifest_at(self.target))
+        self.assertEqual(values['WRISTMIND_PUBLIC_BASE_URL'], 'http://203.0.113.10:8080')
+        self.assertEqual(values['WRISTMIND_BIND_ADDRESS'], '0.0.0.0')
+        self.assertEqual(values['WRISTMIND_SELFHOST_SETUP_TOKEN'], self.values['WRISTMIND_SELFHOST_SETUP_TOKEN'])
+        self.assertFalse((self.target / 'compose.access.yaml').exists())
+        self.assertEqual(installer.manifest_at(self.target)['access']['mode'], 'http')
+
+    def test_invalid_http_address_does_not_change_installation(self):
+        for address in ('http://example.test', '127.0.0.1', '0.0.0.0', '224.0.0.1'):
+            with self.assertRaises(ValueError):
+                access.configure(self.target, 'http', expected_ip=address)
+            self.assertEqual((self.target / '.env').read_text(), self.before)
+
     def test_domain_secure_origin_secrets_and_persisted_volumes(self):
         self.assertEqual(self.domain(), 0)
         values = installer.validate_saved(self.target, installer.manifest_at(self.target))

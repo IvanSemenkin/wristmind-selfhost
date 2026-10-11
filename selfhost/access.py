@@ -133,16 +133,16 @@ def check(target):
     except (OSError, ValueError, RuntimeError) as error:
         access['phase'] = 'pending'
         installer.write_manifest(target, data)
-        print(f'HTTPS ещё не подтверждён: {url}. Проверьте DNS, порты или маршрут туннеля; повторите access --mode check.')
+        print(f'Внешний доступ ещё не подтверждён: {url}. Проверьте DNS, порты или маршрут туннеля; повторите access --mode check.')
         return 1
     access['phase'] = 'ready'
     installer.write_manifest(target, data)
-    print(f'HTTPS проверен. Панель: {url}/talk')
+    print(f"{'HTTP-доступ проверен' if access['mode'] == 'http' else 'HTTPS проверен'}. Панель: {url}/talk")
     return 0
 
 
 def configure(target, mode, domain='', expected_ip=None, token_file=None):
-    if mode not in {'local', 'domain', 'tunnel', 'check'}:
+    if mode not in {'local', 'http', 'domain', 'tunnel', 'check'}:
         raise ValueError('Неизвестный режим доступа.')
     if target.is_symlink():
         raise ValueError('Каталог установки не должен быть ссылкой.')
@@ -158,7 +158,15 @@ def configure(target, mode, domain='', expected_ip=None, token_file=None):
             raise ValueError('Сначала завершите установку: install --resume.')
         if mode == 'check':
             return check(target)
-        host = domain_name(domain) if mode != 'local' else ''
+        host = domain_name(domain) if mode in {'domain', 'tunnel'} else ''
+        address = None
+        if mode == 'http':
+            try:
+                address = ipaddress.ip_address(expected_ip or '')
+            except ValueError:
+                raise ValueError('Укажите IP сервера без протокола и порта.') from None
+            if address.is_loopback or address.is_unspecified or address.is_multicast:
+                raise ValueError('Укажите адрес сервера, доступный с вашего устройства.')
         if mode == 'domain' and not expected_ip:
             raise ValueError('Укажите --expected-ip с публичным IP сервера для проверки A/AAAA.')
         if host:
@@ -178,14 +186,18 @@ def configure(target, mode, domain='', expected_ip=None, token_file=None):
         snapshots = {name: (target / name).read_bytes() if (target / name).exists() else None for name in FILES}
         old_data = json.loads(json.dumps(data))
         url = f'https://{host}' if host else f"http://localhost:{data['port']}"
-        changes = {'WRISTMIND_PUBLIC_BASE_URL': url, 'WRISTMIND_BIND_ADDRESS': '127.0.0.1'}
+        if address:
+            http_host = f'[{address}]' if address.version == 6 else str(address)
+            url = f"http://{http_host}:{data['port']}"
+        bind = '0.0.0.0' if mode == 'http' else '127.0.0.1'
+        changes = {'WRISTMIND_PUBLIC_BASE_URL': url, 'WRISTMIND_BIND_ADDRESS': bind}
         new_values = {**values, **changes, 'TUNNEL_TOKEN': token}
         try:
             # Stop only our managed entry point when explicitly returning to local mode.
-            if mode == 'local' and snapshots['compose.access.yaml']:
+            if mode in {'local', 'http'} and snapshots['compose.access.yaml']:
                 installer.run_step(installer.compose(target, data, 'stop', 'gateway'), target, new_values)
             atomic(target / '.env', update_env(snapshots['.env'].decode(), changes))
-            if mode == 'local':
+            if mode in {'local', 'http'}:
                 (target / 'compose.access.yaml').unlink(missing_ok=True)
             else:
                 atomic(target / 'compose.access.yaml', overlay(mode))
@@ -193,8 +205,8 @@ def configure(target, mode, domain='', expected_ip=None, token_file=None):
                     atomic(target / 'Caddyfile', f'{host} {{\n    reverse_proxy api:8000 {{\n        flush_interval -1\n    }}\n}}\n')
                 else:
                     atomic(target / '.tunnel-token', token + '\n')
-            data['bind'] = '127.0.0.1'
-            data['access'] = {'mode': mode, 'domain': host, 'phase': 'pending' if host else 'local'}
+            data['bind'] = bind
+            data['access'] = {'mode': mode, 'domain': host, 'phase': 'pending' if host or address else 'local'}
             installer.write_manifest(target, data)
             installer.run_step(installer.compose(target, data, 'config', '--quiet'), target, new_values)
             installer.run_step(installer.compose(target, data, 'up', '-d', '--no-build', '--wait', '--wait-timeout', '120'), target, new_values)
@@ -207,7 +219,7 @@ def configure(target, mode, domain='', expected_ip=None, token_file=None):
                     atomic(target / name, content)
             # Restored files and credentials; try to restore running services as well.
             try:
-                if not snapshots['compose.access.yaml'] and mode != 'local':
+                if not snapshots['compose.access.yaml'] and mode in {'domain', 'tunnel'}:
                     # New gateway is now an orphan; stop by project/service label, never touch volumes.
                     result = installer.subprocess.run(['docker', 'ps', '-q', '--filter', f"label=com.docker.compose.project={data['project']}",
                         '--filter', 'label=com.docker.compose.service=gateway'], capture_output=True, text=True, timeout=10,
@@ -225,7 +237,7 @@ def configure(target, mode, domain='', expected_ip=None, token_file=None):
 def main():
     parser = argparse.ArgumentParser(description='Домен / HTTPS / туннель WristMind')
     parser.add_argument('--install-dir', required=True, type=Path)
-    parser.add_argument('--mode', choices=['local', 'domain', 'tunnel', 'check'])
+    parser.add_argument('--mode', choices=['local', 'http', 'domain', 'tunnel', 'check'])
     parser.add_argument('--domain', default='')
     parser.add_argument('--expected-ip')
     parser.add_argument('--tunnel-token-file', type=Path)
@@ -235,11 +247,11 @@ def main():
     if options.mode is None:
         if not sys.stdin.isatty():
             parser.error('Для автоматического запуска укажите --mode.')
-        print('1) Свой домен + HTTPS  2) Cloudflare Tunnel за NAT  3) Оставить локально  4) Проверить HTTPS')
+        print('1) Свой домен + HTTPS  2) Cloudflare Tunnel за NAT  3) Оставить локально  4) Проверить доступ  5) HTTP по IP')
         choice = input('> ').strip()
-        options.mode = {'1': 'domain', '2': 'tunnel', '3': 'local', '4': 'check'}.get(choice)
+        options.mode = {'1': 'domain', '2': 'tunnel', '3': 'local', '4': 'check', '5': 'http'}.get(choice)
         if not options.mode:
-            parser.error('Выберите 1–4.')
+            parser.error('Выберите 1–5.')
         if options.mode in ('domain', 'tunnel'):
             options.domain = input('Домен (без https://): ').strip()
         if options.mode == 'domain':
@@ -247,6 +259,10 @@ def main():
         elif options.mode == 'tunnel':
             print('В Cloudflare создайте Tunnel и маршрут домена → http://api:8000. Сохраните токен в закрытый файл.')
             options.tunnel_token_file = Path(input('Путь к файлу токена: ').strip()).expanduser()
+    if options.mode == 'http':
+        print('HTTP по IP: микрофон браузера недоступен, соединение не шифруется.')
+        if not options.expected_ip and sys.stdin.isatty():
+            options.expected_ip = input('IP сервера, доступный с телефона: ').strip()
     try:
         return configure(options.install_dir, options.mode, options.domain, options.expected_ip, options.tunnel_token_file)
     except (OSError, ValueError, RuntimeError, installer.subprocess.SubprocessError) as error:

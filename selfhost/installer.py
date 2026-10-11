@@ -387,6 +387,12 @@ def main():
             return 0
         if options.command == 'setup-link':
             values = validate_saved(target, manifest_at(target))
+            if values['WRISTMIND_PUBLIC_BASE_URL'].startswith('http://localhost:') and sys.stdin.isatty():
+                print('Настроим HTTP-доступ по IP для входа с другого устройства.', flush=True)
+                result = subprocess.run([sys.executable, str(ROOT / 'selfhost/access.py'), '--install-dir', str(target), '--mode', 'http'])
+                if result.returncode:
+                    return result.returncode
+                values = validate_saved(target, manifest_at(target))
             token = values.get('WRISTMIND_SELFHOST_SETUP_TOKEN', '')
             if not re.fullmatch(r'[0-9a-f]{64}', token):
                 raise ValueError('Код активации отсутствует. Эта установка создана до этапа 4; автоматическая замена запрещена.')
