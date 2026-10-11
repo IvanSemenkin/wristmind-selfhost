@@ -250,7 +250,7 @@ maintenance_menu() {
   ui_header 'Обновления и резервные копии'
   ui_section 'ВЕРСИИ'
   ui_item 1 'Версия'
-  ui_item 2 'Обновить из пакета'
+  ui_item 2 'Обновить автоматически'
   ui_section 'ДАННЫЕ'
   ui_item 3 'Бэкап' "$WM_GREEN"
   ui_item 4 'Восстановить бэкап' "$WM_AMBER"
@@ -263,7 +263,8 @@ maintenance_menu() {
   ui_prompt 'Выберите пункт: '; read -r action || return 0
   case $action in
     1) maintenance version;;
-    2|4|7)
+    2) maintenance update --latest;;
+    4|7)
       read -r -p 'Путь к пакету: ' package || return 0
       read -r -p 'SHA256 из доверенного источника: ' checksum || return 0
       if [[ $action == 2 ]]; then maintenance update --package "$package" --sha256 "$checksum"

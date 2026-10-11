@@ -423,6 +423,7 @@ def main():
     parser.add_argument('--install-dir', type=Path, required=True)
     parser.add_argument('--package', type=Path)
     parser.add_argument('--url')
+    parser.add_argument('--latest', action='store_true')
     parser.add_argument('--sha256')
     parser.add_argument('--confirm-project')
     parser.add_argument('--no-safety-backup', action='store_true', help='Явное аварийное восстановление без копирования текущего повреждённого состояния')
@@ -433,6 +434,15 @@ def main():
     target = args.install_dir
     if not target.is_absolute() or target == Path('/') or target.is_symlink() or not 1 <= args.port <= 65535:
         parser.error('Неверный каталог или порт.')
+    if args.latest:
+        if args.command != 'update' or args.package or args.url or args.sha256:
+            parser.error('--latest доступен только для автоматического update.')
+        try:
+            print('Проверяю новые выпуски WristMind…', flush=True)
+            latest_version, args.url, args.sha256 = release.latest_release()
+        except (OSError, ValueError, KeyError, TypeError):
+            print('Не удалось получить выпуск с GitHub. Повторите позже.', file=sys.stderr)
+            return 1
     if args.command in ('update', 'restore', 'install-release') and (bool(args.package) == bool(args.url) or not re.fullmatch(r'[0-9a-f]{64}', args.sha256 or '')):
         parser.error('Укажите --package либо --url, а также доверенный --sha256.')
     if args.no_safety_backup and args.command != 'restore':
@@ -441,6 +451,13 @@ def main():
         target.parent.mkdir(parents=True, exist_ok=True)
     try:
         with access.locked(target), tempfile.TemporaryDirectory(prefix='wristmind-download-') as downloaded:
+            if args.latest:
+                data, _ = state(target, False)
+                current = data.get('release', {}).get('version', '0.0.0')
+                if tuple(map(int, current.split('.'))) >= tuple(map(int, latest_version.split('.'))):
+                    print('Уже установлена актуальная версия: ' + current)
+                    return 0
+                print('Скачиваю обновление ' + latest_version + '…', flush=True)
             if args.url:
                 args.package = Path(downloaded) / 'package.tar.gz'
                 release.fetch(args.url, args.package, args.sha256)

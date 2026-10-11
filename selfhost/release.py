@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import shutil
@@ -163,6 +164,44 @@ def fetch(url, output, checksum):
     except BaseException:
         output.unlink(missing_ok=True)
         raise
+
+
+def latest_release():
+    """Resolve a complete public server release, including 0.x previews."""
+    arch = {'x86_64': 'amd64', 'aarch64': 'arm64', 'arm64': 'arm64'}.get(platform.machine())
+    if not arch:
+        raise ValueError('Для этой архитектуры нет готового пакета обновления.')
+    request = urllib.request.Request(
+        'https://api.github.com/repos/IvanSemenkin/wristmind-selfhost/releases?per_page=100',
+        headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'WristMind-Updater'})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        releases = json.loads(response.read(2 * 1024 * 1024))
+    candidates = []
+    for item in releases:
+        tag = item.get('tag_name', '')
+        if item.get('draft') or not re.fullmatch('v' + VERSION, tag):
+            continue
+        version = tag[1:]
+        name = f'wristmind-{version}-{arch}.tar.gz'
+        assets = {asset['name']: asset for asset in item.get('assets', []) if asset.get('state') == 'uploaded'}
+        asset = assets.get(name)
+        if not asset or name + '.sha256' not in assets:
+            continue
+        url = f'https://github.com/IvanSemenkin/wristmind-selfhost/releases/download/{tag}/{name}'
+        if asset.get('browser_download_url') != url:
+            continue
+        digest = asset.get('digest') or ''
+        if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+            with urllib.request.urlopen(url + '.sha256', timeout=30) as response:
+                value = response.read(256).decode().split()
+            if len(value) != 2 or value[1] != name or not re.fullmatch(r'[0-9a-f]{64}', value[0]):
+                raise ValueError('Некорректная контрольная сумма выпуска.')
+            digest = 'sha256:' + value[0]
+        candidates.append((tuple(map(int, version.split('.'))), version, url, digest[7:]))
+    if not candidates:
+        raise ValueError('Готовый выпуск для вашего сервера пока не опубликован.')
+    _, version, url, checksum = max(candidates)
+    return version, url, checksum
 
 
 def build(version, arch, output):
