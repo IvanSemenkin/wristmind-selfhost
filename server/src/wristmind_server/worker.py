@@ -2320,7 +2320,6 @@ async def process_answer(job_id: str) -> None:
         from .feature_capabilities import enabled
         if not enabled(settings, 'web_search'):
             web_search_requested = web_research_requested = False
-            web_search_note = '\n\n_Веб-поиск отключён владельцем сервера._'
         if not enabled(settings, 'digitization'):
             wants_source_saved = False
         request_anchor: RequestAnchor | None = None
