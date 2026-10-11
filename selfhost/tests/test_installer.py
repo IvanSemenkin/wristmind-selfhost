@@ -19,6 +19,21 @@ spec.loader.exec_module(installer)
 
 
 class InstallerTest(unittest.TestCase):
+    def test_build_status_and_log_do_not_expose_secrets(self):
+        import io
+        import contextlib
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            secret = 'private-provider-test-token'
+            command = ['python3', '-c', 'print("npm ci '+secret+'")']
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                installer.run_step(command, target, {'API_KEY': secret}, label='Сборка API и панели')
+            self.assertIn('Сборка API и панели', output.getvalue())
+            self.assertIn('готово', output.getvalue())
+            self.assertNotIn(secret, output.getvalue())
+            self.assertNotIn(secret, (target / 'install.log').read_text())
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

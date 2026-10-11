@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKER = '.wristmind-install'
@@ -92,7 +93,7 @@ def compose(target, data, *arguments):
             '-p', data['project'], '-f', str(target / 'compose.yaml'), *overrides, *arguments]
 
 
-def run_step(command, target, values):
+def run_step(command, target, values, label=None):
     hidden = [value for key, value in values.items() if value and
               any(part in key for part in ('SECRET', 'PASSWORD', 'PEPPER', 'TOKEN', 'API_KEY', 'CREDENTIALS'))]
     log_path = target / 'install.log'
@@ -101,16 +102,54 @@ def run_step(command, target, values):
         os.chmod(log_path, 0o600)
         process = subprocess.Popen(command, cwd=target, env=docker_environment(),
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
+        stopped = threading.Event()
+        started = time.monotonic()
+        stage = [label]
+        interactive = sys.stdout.isatty()
+        colours = interactive and os.environ.get('TERM', 'dumb') != 'dumb' and 'NO_COLOR' not in os.environ
+        def show_status(final=None):
+            elapsed = int(time.monotonic() - started)
+            text = f"{stage[0]} · {elapsed // 60:02d}:{elapsed % 60:02d} · {final or 'ожидание Docker'}"
+            if interactive:
+                width = max(20, shutil.get_terminal_size().columns - 1)
+                text = text[:width]
+                prefix = '\033[94m' if colours else ''
+                suffix = '\033[0m' if colours else ''
+                print('\r' + prefix + text.ljust(width) + suffix, end='\n' if final else '', flush=True)
+            else:
+                print(text, flush=True)
+        def heartbeat():
+            while not stopped.wait(1 if interactive else 15):
+                show_status()
+        worker = None
+        if label:
+            show_status()
+            worker = threading.Thread(target=heartbeat, daemon=True)
+            worker.start()
+        code = None
         try:
             for line in process.stdout:
                 for value in hidden:
                     line = line.replace(value, '[скрыто]')
                 log.write(line)
+                log.flush()
+                # Only fixed labels reach the terminal, never raw Docker output.
+                if label and 'build' in command:
+                    lower = line.lower()
+                    if 'npm ci' in lower: stage[0] = 'Установка зависимостей панели'
+                    elif 'npm run build' in lower or 'vite v' in lower: stage[0] = 'Сборка веб-панели'
+                    elif 'pip install' in lower: stage[0] = 'Установка зависимостей API'
+                    elif 'exporting' in lower: stage[0] = 'Сохранение Docker-образа'
             code = process.wait()
         except BaseException:
             process.terminate()
             process.wait(timeout=10)
             raise
+        finally:
+            stopped.set()
+            if worker:
+                worker.join(timeout=2)
+                show_status('готово' if code == 0 else 'остановлено')
     if code:
         raise RuntimeError('Операция Docker не завершилась. Подробности в защищённом install.log.')
 
@@ -307,11 +346,11 @@ def install(target, options):
                 if release.inspect_image(values['WRISTMIND_IMAGE'])['Id'] != data['release']['image_id']:
                     raise ValueError('Нет точного образа релиза. Повторите install-release --resume с исходным пакетом.')
             else:
-                run_step(compose(target, data, 'build', 'api'), target, values)
+                run_step(compose(target, data, 'build', 'api'), target, values, label='Сборка API и панели')
             data['phase'] = 'starting'
             write_manifest(target, data)
             print('4/5 Запускаю базу, API и обработчик', flush=True)
-            run_step(compose(target, data, 'up', '-d', '--no-build', '--wait', '--wait-timeout', str(options.timeout)), target, values)
+            run_step(compose(target, data, 'up', '-d', '--no-build', '--wait', '--wait-timeout', str(options.timeout)), target, values, label='Запуск сервисов')
             print('5/5 Проверяю API', flush=True)
             health(target, data, options.timeout)
             data['phase'] = 'ready'
