@@ -74,3 +74,18 @@ shutil.copyfile(os.environ['WM_TEST_ARCHIVE'], sys.argv[sys.argv.index('--output
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('Не удалось проверить', result.stderr)
         self.assertFalse((self.folder / 'escaped').exists())
+
+
+class MaintenanceMenuTest(unittest.TestCase):
+    def test_empty_invalid_and_crlf_input_keep_submenu_open(self):
+        code = (ROOT / 'wristmind').read_text().rsplit('case $WM_COMMAND in', 1)[0]
+        code += '\nmaintenance() { printf "OPERATION:%s\\n" "$*"; }\nmaintenance_menu\necho FINISHED\n'
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'menu.sh'
+            script.write_text(code)
+            result = subprocess.run(['bash', str(script)], input='\r\nwrong\r\n1\r\n0\r\n',
+                                    text=True, capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('OPERATION:version', result.stdout)
+        self.assertIn('FINISHED', result.stdout)
+        self.assertGreaterEqual(result.stdout.count('Обновления и резервные копии'), 3)

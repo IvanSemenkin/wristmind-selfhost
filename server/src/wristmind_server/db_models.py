@@ -10,7 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .source_prompts import DEFAULT_SOURCE_CANDIDATE_PROMPT, DEFAULT_SOURCE_INTENT_PROMPT
 
-from .database import Base
+from .database import Base, DEFAULT_GLOBAL_PROMPT
 
 
 def utcnow() -> datetime:
@@ -77,7 +77,7 @@ class AppSettings(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     global_system_prompt: Mapped[str] = mapped_column(
         Text,
-        default="Ты — WristMind. Отвечай на языке пользователя кратко и по делу. Не выдумывай факты; если не уверен — скажи.",
+        default=DEFAULT_GLOBAL_PROMPT,
     )
     source_intent_prompt: Mapped[str] = mapped_column(Text, default=DEFAULT_SOURCE_INTENT_PROMPT)
     source_candidate_prompt: Mapped[str] = mapped_column(Text, default=DEFAULT_SOURCE_CANDIDATE_PROMPT)

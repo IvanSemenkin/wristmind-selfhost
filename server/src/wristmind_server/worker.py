@@ -18,7 +18,7 @@ from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import selectinload
 
 from .config import get_settings, resolve_model_id
-from .database import SessionFactory, close_database, init_database
+from .database import DEFAULT_GLOBAL_PROMPT, SessionFactory, close_database, init_database
 from .db_models import AppSettings, Chat, ChatSearchTask, ChatSourceCandidate, Job, JobEvent, KnowledgeChunk, KnowledgeSource, Message, PromptOverride, RawWebSource, ReferencedWebSource, utcnow
 from .prompt_registry import render_prompt, reset_prompt_overrides, set_prompt_overrides
 from .prompt_templates import DEFAULT_CHAT_TITLE_PROMPT
@@ -2054,7 +2054,7 @@ async def process_answer(job_id: str) -> None:
         # claim that a document was rejected.
         search_task = await session.get(ChatSearchTask, chat.id)
         rejected_ids = rejected_source_ids(search_task)
-        global_prompt = app_config.global_system_prompt if app_config else "Ты — WristMind."
+        global_prompt = app_config.global_system_prompt if app_config else DEFAULT_GLOBAL_PROMPT
         source_intent_prompt = (
             app_config.source_intent_prompt if app_config else DEFAULT_SOURCE_INTENT_PROMPT
         )

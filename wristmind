@@ -247,6 +247,7 @@ maintenance() {
 }
 maintenance_menu() {
   local action package checksum project
+  while true; do
   ui_header 'Обновления и резервные копии'
   ui_section 'ВЕРСИИ'
   ui_item 1 'Версия'
@@ -261,6 +262,8 @@ maintenance_menu() {
   printf '\n'; ui_rule
   ui_item 0 'Назад' "$WM_DIM"
   ui_prompt 'Выберите пункт: '; read -r action || return 0
+  action=${action//$'\r'/}
+  [[ -n $action ]] || continue
   case $action in
     1) maintenance version;;
     2) maintenance update --latest;;
@@ -282,8 +285,9 @@ maintenance_menu() {
       read -r -p 'Имя проекта для подтверждения: ' project || return 0
       if [[ $action == 5 ]]; then maintenance rollback --confirm-project "$project"
       else maintenance remove --confirm-project "$project"; fi;;
-    0) return 0;; *) echo 'Выберите 0–7.'; return 2;;
+    0) return 0;; *) echo 'Выберите 0–7.'; continue;;
   esac
+  done
 }
 menu_install() {
   local selected_port selected_mode
@@ -325,6 +329,8 @@ menu() {
     ui_item 0 'Выход' "$WM_DIM"
     printf '%bВведите номер пункта · Ctrl+C — прервать%b\n' "$WM_DIM" "$WM_RESET"
     ui_prompt 'Выберите пункт: '; read -r choice || return 0
+    choice=${choice//$'\r'/}
+    [[ -n $choice ]] || continue
     case $choice in 1) check || true;; 2) status;; 3) menu_install || true;; 4) access || true;; 5) maintenance_menu || true;; 6) python3 "$WM_ROOT/selfhost/installer.py" setup-link --install-dir "$WM_INSTALL_DIR" || true;; 7) local_model || true;; 8) python3 "$WM_ROOT/selfhost/web_search.py" --install-dir "$WM_INSTALL_DIR" || true;; 0) return 0;; *) echo 'Выберите 0–8.';; esac
   done
 }

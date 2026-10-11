@@ -8,6 +8,7 @@ from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.pool import NullPool
 
 from .config import get_settings
+from .assistant_prompt import DEFAULT_GLOBAL_PROMPT
 from .source_prompts import DEFAULT_SOURCE_CANDIDATE_PROMPT, DEFAULT_SOURCE_INTENT_PROMPT
 
 
@@ -17,7 +18,7 @@ LEGACY_DEFAULT_GLOBAL_PROMPT = (
     "если без них ответ будет неточным. Проверяй факты и вычисления, не выдумывай "
     "источники; отмечай неопределённость."
 )
-DEFAULT_GLOBAL_PROMPT = "Ты — WristMind. Отвечай на языке пользователя кратко и по делу. Не выдумывай факты; если не уверен — скажи."
+MINIMAL_DEFAULT_GLOBAL_PROMPT = "Ты — WristMind. Отвечай на языке пользователя кратко и по делу. Не выдумывай факты; если не уверен — скажи."
 
 
 class Base(DeclarativeBase):
@@ -147,10 +148,6 @@ async def init_database() -> None:
                     "ON pairing_codes (created_by_id, client_request_id) WHERE client_request_id IS NOT NULL"
                 )
             )
-            await connection.execute(
-                text("UPDATE app_settings SET global_system_prompt = :current WHERE global_system_prompt = :legacy"),
-                {"current": DEFAULT_GLOBAL_PROMPT, "legacy": LEGACY_DEFAULT_GLOBAL_PROMPT},
-            )
         elif connection.dialect.name == "sqlite":
             user_columns = (await connection.execute(text("PRAGMA table_info(users)"))).mappings().all()
             if not any(column["name"] == "deleted_at" for column in user_columns):
@@ -257,6 +254,14 @@ async def init_database() -> None:
                     "ON chats (user_id, client_request_id) WHERE client_request_id IS NOT NULL"
                 )
             )
+        # Upgrade only known factory defaults; never overwrite user instructions.
+        await connection.execute(
+            text("UPDATE app_settings SET global_system_prompt = :current "
+                 "WHERE global_system_prompt IN (:legacy, :minimal)"),
+            {"current": DEFAULT_GLOBAL_PROMPT, "legacy": LEGACY_DEFAULT_GLOBAL_PROMPT,
+             "minimal": MINIMAL_DEFAULT_GLOBAL_PROMPT},
+        )
+
 
 
 async def close_database() -> None:

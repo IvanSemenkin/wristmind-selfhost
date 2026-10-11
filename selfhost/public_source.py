@@ -22,7 +22,7 @@ EXTRA = ('server/pyproject.toml', 'web/package.json', 'web/package-lock.json',
          'android/gradle.properties', 'android/gradlew', 'android/gradlew.bat')
 DOCS = ('SELF_HOSTING_INSTALL', 'SELF_HOSTING_ACCESS', 'SELF_HOSTING_RELEASES',
         'SELF_HOSTING_RUNTIME', 'SELF_HOSTING_CAPABILITIES', 'LOCAL_MODELS',
-        'COMPANION_SETUP', 'PUBLIC_RELEASE_CHECKLIST')
+        'COMPANION_SETUP', 'PUBLIC_RELEASE_CHECKLIST', 'PROMPT_PARITY', 'ASSISTANT_SYSTEM_PROMPT')
 BLOCKED = ('build', 'node_modules', '__pycache__', '.pytest_cache', '.gradle',
            '.kotlin', 'data', 'data-v2', '.runtime', '.git', '.well-known')
 PATTERNS = ('.env*', '*.db', '*.sqlite*', '*.jks', '*.keystore', '*.pem', '*.key',
