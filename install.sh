@@ -19,7 +19,12 @@ trap 'rm -rf -- "$WM_TEMP"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 WM_SOURCE_URL='https://codeload.github.com/IvanSemenkin/wristmind-selfhost/tar.gz/refs/heads/main'
-echo 'WristMind — загружаем установщик и открываем меню…'
+if [[ -t 1 && ${TERM:-dumb} != dumb && ! ${NO_COLOR+x} ]]; then
+  printf '\n\033[1;94mWristMind\033[0m  \033[90mSELFHOST\033[0m\n'
+  printf '\033[90mЗагружаем меню установки и настройки…\033[0m\n\n'
+else
+  echo 'WristMind — загружаем меню установки и настройки…'
+fi
 if ! curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
   --connect-timeout 15 --max-time 180 --max-filesize 67108864 \
   "$WM_SOURCE_URL" --output "$WM_TEMP/source.tar.gz"; then

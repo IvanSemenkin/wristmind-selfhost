@@ -20,6 +20,44 @@ WM_SHA256=''
 WM_CONFIRM_PROJECT=''
 WM_NO_SAFETY=false
 WM_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# Colours are presentation only: pipes, TERM=dumb and NO_COLOR stay plain.
+WM_RESET=''; WM_BLUE=''; WM_GREEN=''; WM_AMBER=''; WM_RED=''; WM_DIM=''; WM_BOLD=''
+if [[ -t 1 && ${TERM:-dumb} != dumb && ! ${NO_COLOR+x} ]]; then
+  WM_RESET=$'\033[0m'; WM_BLUE=$'\033[94m'; WM_GREEN=$'\033[92m'
+  WM_AMBER=$'\033[93m'; WM_RED=$'\033[91m'; WM_DIM=$'\033[90m'; WM_BOLD=$'\033[1m'
+fi
+ui_rule() {
+  local width=${COLUMNS:-64} line
+  [[ $width =~ ^[0-9]+$ ]] || width=64
+  (( width > 76 )) && width=76
+  (( width < 28 )) && width=28
+  printf -v line '%*s' "$width" ''
+  printf '%b%s%b\n' "$WM_DIM" "${line// /─}" "$WM_RESET"
+}
+ui_header() {
+  printf '\n%bWristMind%b  %bSELFHOST%b\n' "$WM_BLUE$WM_BOLD" "$WM_RESET" "$WM_DIM" "$WM_RESET"
+  printf '%b%s%b\n' "$WM_BOLD" "$1" "$WM_RESET"
+  ui_rule
+}
+ui_section() { printf '\n%b%s%b\n' "$WM_DIM$WM_BOLD" "$1" "$WM_RESET"; }
+ui_item() {
+  local colour=${3:-$WM_BLUE}
+  printf '  %b%s)%b  %s\n' "$colour$WM_BOLD" "$1" "$WM_RESET" "$2"
+}
+ui_prompt() { printf '\n%b›%b %s' "$WM_BLUE$WM_BOLD" "$WM_RESET" "$1"; }
+ui_state() {
+  local label colour current
+  current=$(state)
+  case $current in
+    installed) label='Установлено'; colour=$WM_GREEN;;
+    incomplete) label='Установка не завершена'; colour=$WM_AMBER;;
+    occupied) label='Каталог занят'; colour=$WM_RED;;
+    *) label='Новая установка'; colour=$WM_BLUE;;
+  esac
+  printf '%b● %s%b\n' "$colour" "$label" "$WM_RESET"
+  printf '%bКаталог:%b %s\n' "$WM_DIM" "$WM_RESET" "$WM_INSTALL_DIR"
+  printf '%bТекущая доступность сервисов здесь не проверяется.%b\n' "$WM_DIM" "$WM_RESET"
+}
 usage() {
   cat <<'EOF'
 WristMind — самостоятельная установка
@@ -171,8 +209,20 @@ maintenance() {
 }
 maintenance_menu() {
   local action package checksum project
-  echo '1) Версия  2) Обновить из пакета  3) Бэкап  4) Восстановить бэкап  5) Откат  6) Удалить контейнеры (данные сохранятся)  7) Установить из готового пакета  0) Назад'
-  read -r -p '> ' action || return 0
+  ui_header 'Обновления и резервные копии'
+  ui_section 'ВЕРСИИ'
+  ui_item 1 'Версия'
+  ui_item 2 'Обновить из пакета'
+  ui_section 'ДАННЫЕ'
+  ui_item 3 'Бэкап' "$WM_GREEN"
+  ui_item 4 'Восстановить бэкап' "$WM_AMBER"
+  ui_item 5 'Откат' "$WM_AMBER"
+  ui_item 6 'Удалить контейнеры (данные сохранятся)' "$WM_RED"
+  ui_section 'УСТАНОВКА ИЗ ПАКЕТА'
+  ui_item 7 'Установить из готового пакета'
+  printf '\n'; ui_rule
+  ui_item 0 'Назад' "$WM_DIM"
+  ui_prompt 'Выберите пункт: '; read -r action || return 0
   case $action in
     1) maintenance version;;
     2|4|7)
@@ -198,14 +248,17 @@ maintenance_menu() {
 }
 menu_install() {
   local selected_port selected_mode
+  ui_header 'Параметры установки'
   if [[ $(state) == new ]]; then
-    read -r -p "HTTP-порт [${WM_PORT:-8080}]: " selected_port || return 0
+    ui_prompt "HTTP-порт [${WM_PORT:-8080}]: "; read -r selected_port || return 0
     selected_port=${selected_port:-${WM_PORT:-8080}}
     if [[ ! $selected_port =~ ^[0-9]{1,5}$ ]] || (( 10#$selected_port < 1 || 10#$selected_port > 65535 )); then
       echo 'Введите порт от 1 до 65535.' >&2; return 2
     fi
     WM_PORT=$selected_port
-    read -r -p 'Режим: 1 — обычная установка, 2 — демо без платных запросов [1]: ' selected_mode || return 0
+    ui_item 1 'Обычная установка' "$WM_GREEN"
+    ui_item 2 'Демо без платных запросов' "$WM_DIM"
+    ui_prompt 'Режим [1]: '; read -r selected_mode || return 0
     case ${selected_mode:-1} in 1) WM_DEMO=false;; 2) WM_DEMO=true;; *) echo 'Выберите 1 или 2.' >&2; return 2;; esac
   elif [[ $(state) == incomplete ]]; then
     WM_RESUME=true
@@ -216,9 +269,23 @@ menu() {
   if [[ ! -t 0 ]]; then status; echo 'Для меню откройте терминал; для диагностики используйте ./wristmind check.'; return 0; fi
   local choice
   while true; do
-    echo; echo 'WristMind · самостоятельная установка'; status
-    echo '1) Проверить требования'; echo '2) Показать состояние'; echo '3) Установить / продолжить установку'; echo '4) Домен / HTTPS / туннель'; echo '5) Обновления и резервные копии'; echo '6) Ссылка первого входа'; echo '7) Локальный поиск по смыслу'; echo '8) Настроить веб-поиск'; echo '0) Выход'
-    read -r -p '> ' choice || return 0
+    ui_header 'Установка и настройка'
+    ui_state
+    ui_section 'НАЧАЛО РАБОТЫ'
+    ui_item 1 'Проверить требования'
+    ui_item 2 'Показать состояние'
+    ui_item 3 'Установить / продолжить установку' "$WM_GREEN"
+    ui_section 'ДОСТУП И ОБСЛУЖИВАНИЕ'
+    ui_item 4 'Домен / HTTPS / туннель'
+    ui_item 5 'Обновления и резервные копии' "$WM_AMBER"
+    ui_item 6 'Ссылка первого входа'
+    ui_section 'ДОПОЛНИТЕЛЬНЫЕ ВОЗМОЖНОСТИ'
+    ui_item 7 'Локальный поиск по смыслу'
+    ui_item 8 'Настроить веб-поиск'
+    printf '\n'; ui_rule
+    ui_item 0 'Выход' "$WM_DIM"
+    printf '%bВведите номер пункта · Ctrl+C — прервать%b\n' "$WM_DIM" "$WM_RESET"
+    ui_prompt 'Выберите пункт: '; read -r choice || return 0
     case $choice in 1) check || true;; 2) status;; 3) menu_install || true;; 4) access || true;; 5) maintenance_menu || true;; 6) python3 "$WM_ROOT/selfhost/installer.py" setup-link --install-dir "$WM_INSTALL_DIR" || true;; 7) local_model || true;; 8) python3 "$WM_ROOT/selfhost/web_search.py" --install-dir "$WM_INSTALL_DIR" || true;; 0) return 0;; *) echo 'Выберите 0–8.';; esac
   done
 }
