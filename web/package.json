@@ -9,7 +9,7 @@
     "start": "vite preview --host 127.0.0.1 --port 18786",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
-    "test": "node --test --experimental-strip-types src/lib/*.test.ts"
+    "test": "node --test --experimental-strip-types src/lib/*.test.*"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.1.1",
