@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+from functools import wraps
 import fcntl
 import hashlib
 import json
@@ -18,6 +20,66 @@ import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKER = '.wristmind-install'
+
+
+_status_state = threading.local()
+
+
+@contextmanager
+def wait_status(label, detail=None, interval=None):
+    """Heartbeat for real work, without subprocess output or private arguments."""
+    if getattr(_status_state, 'active', False):
+        yield
+        return
+    _status_state.active = True
+    stream = sys.stderr
+    terminal = stream.isatty()
+    delay = interval if interval is not None else (1 if terminal else 5)
+    stopped = threading.Event()
+    started = time.monotonic()
+    frames = ('◐', '◓', '◑', '◒')
+    frame = 0
+    def render(final=None):
+        nonlocal frame
+        elapsed = int(time.monotonic() - started)
+        suffix = detail() if detail is not None else ''
+        line = f"{final or frames[frame % 4]} {label} · {elapsed // 60:02d}:{elapsed % 60:02d}"
+        if suffix:
+            line += ' · ' + suffix
+        print(('\r\033[K' if terminal else '') + line,
+              end='\n' if final or not terminal else '', file=stream, flush=True)
+        frame += 1
+    def heartbeat():
+        while not stopped.wait(delay):
+            render()
+    worker = threading.Thread(target=heartbeat, daemon=True)
+    failed = False
+    try:
+        render()
+        worker.start()
+        yield
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        stopped.set()
+        if worker.ident is not None:
+            worker.join()
+        try:
+            render('✕' if failed else '✓')
+        finally:
+            _status_state.active = False
+
+
+def with_status(label):
+    def decorate(function):
+        @wraps(function)
+        def wrapped(*args, **kwargs):
+            title = label(*args, **kwargs) if callable(label) else label
+            with wait_status(title):
+                return function(*args, **kwargs)
+        return wrapped
+    return decorate
 
 
 def manifest_at(target):
@@ -239,6 +301,7 @@ def prepare(target, options, files=None):
             shutil.rmtree(staging)  # Only our freshly allocated staging directory.
 
 
+@with_status('Проверяю требования и доступность Docker')
 def preflight(target, options, fresh):
     version = subprocess.run(['docker', 'compose', 'version', '--short'], capture_output=True,
                              text=True, timeout=10, env=docker_environment())
@@ -255,6 +318,7 @@ def preflight(target, options, fresh):
             raise ValueError('Docker недоступен. Конфигурация сохранена без изменений.')
 
 
+@with_status('Проверяю готовность API и поиска')
 def health(target, data, timeout):
     # Check inside the API container: no dependency on externally open ports,
     # IPv6, proxy environment, or a different service returning /health.

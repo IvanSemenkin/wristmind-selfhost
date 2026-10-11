@@ -47,7 +47,7 @@ if [[ -t 1 && ${TERM:-dumb} != dumb && ! ${NO_COLOR+x} ]]; then
 else
   echo 'WristMind — загружаем меню установки и настройки…'
 fi
-if ! curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+if ! curl --fail --progress-bar --show-error --location --proto '=https' --proto-redir '=https' \
   --connect-timeout 15 --max-time 180 --max-filesize 67108864 \
   "$WM_SOURCE_URL" --output "$WM_TEMP/source.tar.gz"; then
   echo 'Не удалось скачать WristMind. Проверьте интернет и доступ к репозиторию; установка не изменена.' >&2

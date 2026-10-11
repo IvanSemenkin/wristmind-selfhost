@@ -24,6 +24,7 @@ VERSION = r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
 MAX_BYTES = 32 * 1024**3
 
 
+@installer.with_status('Проверяю SHA256')
 def digest(path):
     hasher = hashlib.sha256()
     with path.open('rb') as stream:
@@ -70,6 +71,7 @@ def metadata(data):
     return data
 
 
+@installer.with_status('Проверяю и распаковываю архив')
 def unpack(package, checksum, destination):
     if package.is_symlink() or not re.fullmatch(r'[0-9a-f]{64}', checksum or '') or digest(package) != checksum:
         raise ValueError('SHA256 не совпадает. Установка не изменена.')
@@ -102,6 +104,7 @@ def unpack(package, checksum, destination):
     return data
 
 
+@installer.with_status('Упаковываю архив')
 def pack(directory, data, output):
     if output.exists() or output.is_symlink():
         raise ValueError('Файл результата уже существует; перезапись запрещена.')
@@ -132,6 +135,7 @@ def pack(directory, data, output):
     return digest(output)
 
 
+@installer.with_status('Проверяю Docker-образ')
 def inspect_image(image):
     result = subprocess.run(['docker', 'image', 'inspect', image], capture_output=True, text=True,
                             check=True, timeout=30, env=installer.docker_environment())
@@ -150,15 +154,24 @@ def fetch(url, output, checksum):
             if urlsplit(redirected).scheme != 'https':
                 raise ValueError('Переход с HTTPS на HTTP запрещён.')
             return super().redirect_request(request, fp, code, message, headers, redirected)
+    count = 0
+    total = None
+    def progress():
+        amount = f'{count / 1024**2:.1f} МБ'
+        if total:
+            amount = f'{count / 1024**2:.1f} / {total / 1024**2:.1f} МБ'
+        return amount
     try:
-        with urllib.request.build_opener(HTTPSOnly()).open(url, timeout=30) as source, output.open('xb') as stream:
-            os.chmod(output, 0o600)
-            count = 0
-            while block := source.read(1024 * 1024):
-                count += len(block)
-                if count > MAX_BYTES:
-                    raise ValueError('Слишком большой пакет.')
-                stream.write(block)
+        with installer.wait_status('Скачиваю пакет обновления', progress):
+            with urllib.request.build_opener(HTTPSOnly()).open(url, timeout=30) as source, output.open('xb') as stream:
+                os.chmod(output, 0o600)
+                length = source.headers.get('Content-Length', '')
+                total = int(length) if length.isdigit() else None
+                while block := source.read(1024 * 1024):
+                    count += len(block)
+                    if count > MAX_BYTES:
+                        raise ValueError('Слишком большой пакет.')
+                    stream.write(block)
         if digest(output) != checksum:
             raise ValueError('SHA256 загруженного пакета не совпадает.')
     except BaseException:
@@ -166,6 +179,7 @@ def fetch(url, output, checksum):
         raise
 
 
+@installer.with_status('Проверяю выпуски на GitHub')
 def latest_release():
     """Resolve a complete public server release, including 0.x previews."""
     arch = {'x86_64': 'amd64', 'aarch64': 'arm64', 'arm64': 'arm64'}.get(platform.machine())

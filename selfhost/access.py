@@ -20,6 +20,7 @@ import installer
 FILES = ('.env', '.wristmind-install', 'compose.access.yaml', 'Caddyfile', '.tunnel-token')
 
 
+@installer.with_status('Определяю IP сервера')
 def detect_server_ip():
     """Prefer the public SSH destination; do not confuse it with the client IP."""
     def address(value):
@@ -62,6 +63,7 @@ def domain_name(value):
     raise ValueError('Для HTTPS укажите доменное имя, а не IP.')
 
 
+@installer.with_status('Проверяю DNS домена')
 def dns_check(host, expected=None):
     try:
         addresses = {ipaddress.ip_address(row[4][0]) for row in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)}
@@ -133,6 +135,7 @@ def locked(target):
         yield
 
 
+@installer.with_status('Проверяю доступ к панели')
 def public_health(url):
     # No redirects: a login page or another host is not a successful API probe.
     class NoRedirect(urllib.request.HTTPRedirectHandler):

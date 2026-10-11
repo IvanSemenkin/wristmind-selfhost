@@ -59,6 +59,24 @@ with tempfile.TemporaryFile() as f:
 """
 
 
+def operation_label(command, target, source=None, destination=None):
+    if destination:
+        return {'database.dump': 'Сохраняю базу данных', 'private.tar.gz': 'Сохраняю пользовательские файлы',
+                'image.tar': 'Сохраняю прежний Docker-образ'}.get(destination.name, 'Создаю резервную копию')
+    if command[:3] == ['docker', 'image', 'load']:
+        return 'Загружаю Docker-образ из пакета'
+    if command[:3] == ['docker', 'image', 'pull']:
+        return 'Скачиваю образ зависимости'
+    if 'up' in command:
+        return 'Запускаю сервисы и ожидаю их готовности'
+    if 'stop' in command or 'down' in command:
+        return 'Останавливаю сервисы'
+    if 'pg_restore' in command:
+        return 'Восстанавливаю базу данных'
+    return 'Выполняю операцию Docker'
+
+
+@installer.with_status(operation_label)
 def run(command, target, source=None, destination=None):
     # Binary database/file/image streams never enter logs or terminal output.
     with (source.open('rb') if source else open(os.devnull, 'rb')) as input_stream:
@@ -85,6 +103,7 @@ def state(target, require_ready=True):
     return data, values
 
 
+@installer.with_status('Проверяю запущенные сервисы')
 def running(target, data):
     result = subprocess.run(command(target, data, 'ps', '--status', 'running', '--services'),
         capture_output=True, text=True, check=True, timeout=20, env=installer.docker_environment())
@@ -177,6 +196,7 @@ def daemon_arch():
     return arch
 
 
+@installer.with_status('Проверяю идентификатор и архитектуру образа')
 def check_image(target, manifest, image_archive=None):
     actual = release.inspect_image(manifest['image'])
     matches = actual['Id'] == manifest['image_id']
@@ -341,6 +361,7 @@ def update(target, package, checksum):
         print(f"Обновлено до {info['version']}. Возврат: wristmind rollback с подтверждением проекта.")
 
 
+@installer.with_status('Проверяю доступность проекта')
 def project_available(project):
     result = subprocess.run(['docker', 'ps', '-aq', '--filter', 'label=com.docker.compose.project=' + project],
         capture_output=True, text=True, check=True, timeout=20, env=installer.docker_environment())

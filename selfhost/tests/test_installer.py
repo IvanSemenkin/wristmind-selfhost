@@ -34,6 +34,27 @@ class InstallerTest(unittest.TestCase):
             self.assertNotIn(secret, output.getvalue())
             self.assertNotIn(secret, (target / 'install.log').read_text())
 
+    def test_wait_status_updates_and_stops_after_failure(self):
+        import io
+        import time
+        import contextlib
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            with self.assertRaises(RuntimeError):
+                with installer.wait_status('Проверка', lambda: '12.0 МБ', interval=0.01):
+                    with installer.wait_status('Вложенный статус'):
+                        time.sleep(0.04)
+                        raise RuntimeError('private-provider-token')
+            saved = output.getvalue()
+            time.sleep(0.03)
+            self.assertEqual(saved, output.getvalue())
+        self.assertGreaterEqual(saved.count('Проверка'), 3)
+        self.assertIn('12.0 МБ', saved)
+        self.assertIn('✕', saved)
+        self.assertNotIn('Вложенный статус', saved)
+        self.assertNotIn('private-provider-token', saved)
+        self.assertFalse(getattr(installer._status_state, 'active', False))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
