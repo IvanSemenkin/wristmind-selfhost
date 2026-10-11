@@ -1,9 +1,11 @@
+import type { SpeechPacket, SpeechResult } from '@/lib/streamingDictation';
 import type { Session } from '@/session';
 import { WristMindError } from './errors';
 import { dedupeWebSources, domainFromUrl, extractLegacySources } from '@/lib/webSources';
 import { normalizeChatSources } from '@/lib/chatSources';
 import type {
   BootstrapResult,
+  AccountEventHandlers,
   WristMindEvent,
   WristMindEventListener,
   WristMindService,
@@ -37,7 +39,7 @@ import type {
   SystemHealth,
 } from '@/types';
 
-type ApiMode = Omit<Mode, 'color' | 'icon'> & { color: string; icon: string };
+type ApiMode = Omit<Mode, 'color' | 'icon'> & { color: string; icon: string; telegram_emoji_id?: string | null };
 type ApiJob = { id: string; status: string; result: Record<string, unknown>; error: string | null };
 type ApiMessage = Omit<Message, 'status' | 'usage' | 'timings' | 'sources' | 'phases'> & {
   status: string;
@@ -183,6 +185,17 @@ export class ApiWristMindService implements WristMindService {
 
   constructor(private readonly session: Session, private readonly onInvalidToken?: () => void) {}
 
+  async speechStream(packet: SpeechPacket, signal: AbortSignal): Promise<SpeechResult> {
+    return this.request<SpeechResult>('/v1/stt/stream', { method: 'POST', body: JSON.stringify(packet), signal });
+  }
+
+  async transcribeAudio(audio: Blob, signal: AbortSignal): Promise<string> {
+    const body = new FormData();
+    body.append('file', audio, 'dictation.pcm');
+    const result = await this.request<{ text: string }>('/v1/stt/yandex', { method: 'POST', body, signal });
+    return result.text;
+  }
+
   subscribe = (listener: WristMindEventListener): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -192,20 +205,107 @@ export class ApiWristMindService implements WristMindService {
     for (const listener of this.listeners) listener(event);
   }
 
+  /**
+   * Live account feed.
+   *
+   * Every event carries a monotonic id from the server, and that id is fed
+   * back as `after` after any disconnect, so a dropped connection never loses
+   * a change. Reconnects back off exponentially; `resync` means the cursor fell
+   * behind the server's retention window and the caller should reload once
+   * rather than trust its partial cache.
+   */
+  subscribeAccountEvents = (after: number, handlers: AccountEventHandlers): (() => void) => {
+    const controller = new AbortController();
+    let stopped = false;
+    let cursor = after;
+
+    const run = async () => {
+      let attempt = 0;
+      while (!stopped) {
+        try {
+          const response = await fetch(
+            `${this.session.baseUrl.replace(/\/+$/, '')}/v1/events?after=${cursor}`,
+            {
+              headers: {
+                ...(this.session.token ? { Authorization: `Bearer ${this.session.token}` } : {}),
+                Accept: 'text/event-stream',
+              },
+              signal: controller.signal,
+            },
+          );
+          if (!response.ok || !response.body) {
+            throw apiError(response.status, 'Не удалось открыть поток событий');
+          }
+          attempt = 0;
+          handlers.onStatusChange?.(true);
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          while (!stopped) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true }).replaceAll('\r\n', '\n');
+            let boundary = buffer.indexOf('\n\n');
+            while (boundary >= 0) {
+              const block = buffer.slice(0, boundary);
+              buffer = buffer.slice(boundary + 2);
+              let id = cursor;
+              let name = 'message';
+              const data: string[] = [];
+              for (const line of block.split('\n')) {
+                if (line.startsWith('id:')) id = Number(line.slice(3).trim()) || id;
+                else if (line.startsWith('event:')) name = line.slice(6).trim();
+                else if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+              }
+              if (name === 'resync') {
+                handlers.onResync?.();
+              } else if (data.length) {
+                cursor = id;
+                let payload: Record<string, unknown> = {};
+                try {
+                  payload = JSON.parse(data.join('\n')) as Record<string, unknown>;
+                } catch {
+                  payload = {};
+                }
+                handlers.onEvent({ id, type: name, data: payload });
+              }
+              boundary = buffer.indexOf('\n\n');
+            }
+          }
+        } catch {
+          if (stopped) return;
+        }
+        handlers.onStatusChange?.(false);
+        if (stopped) return;
+        attempt += 1;
+        const delay = Math.min(1000 * 2 ** (attempt - 1), 15_000);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    };
+
+    void run();
+    return () => {
+      stopped = true;
+      controller.abort();
+    };
+  };
+
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
     if (this.session.token) headers.set('Authorization', `Bearer ${this.session.token}`);
+    if (!this.session.token && init.method && !['GET', 'HEAD'].includes(init.method.toUpperCase())) headers.set('X-WristMind-CSRF', '1');
     if (!(init.body instanceof FormData) && init.body !== undefined) headers.set('Content-Type', 'application/json');
     let response: Response;
     try {
       response = await fetch(`${this.session.baseUrl.replace(/\/+$/, '')}${path}`, { ...init, headers, cache: 'no-store' });
     } catch {
+      if (init.signal?.aborted) throw new WristMindError('Генерация остановлена', { code: 'aborted' });
       throw new WristMindError('Сервер недоступен. Проверьте адрес и соединение.', { code: 'network', status: 0 });
     }
     const contentType = response.headers.get('content-type') ?? '';
     if (!response.ok) {
       const payload = contentType.includes('json') ? await response.json().catch(() => null) as { detail?: string } | null : null;
-      if (response.status === 401 && payload?.detail === 'Invalid device token') this.onInvalidToken?.();
+      if (response.status === 401) this.onInvalidToken?.();
       throw apiError(response.status, payload?.detail ?? `Ошибка сервера ${response.status}`);
     }
     if (response.status === 204) return undefined as T;
@@ -213,11 +313,11 @@ export class ApiWristMindService implements WristMindService {
   }
 
   private mapMode(value: ApiMode): Mode {
-    return { ...value, color: modeColor(value.color), icon: value.icon || null, deleted_at: value.deleted_at ?? null };
+    return { ...value, color: modeColor(value.color), icon: value.icon || null, telegram_emoji_id: value.telegram_emoji_id ?? null, deleted_at: value.deleted_at ?? null };
   }
 
   private mapChat(value: any): Chat {
-    return { ...value, mode_id: value.mode_id ?? null, mode_name: value.mode_name ?? null, deleted_at: value.deleted_at ?? null, pinned: false };
+    return { ...value, mode_id: value.mode_id ?? null, mode_name: value.mode_name ?? null, deleted_at: value.deleted_at ?? null, pinned: value.pinned === true };
   }
 
   /**
@@ -296,7 +396,7 @@ export class ApiWristMindService implements WristMindService {
       return this.mapChat(value);
     },
     update: async (id: string, input: { title?: string; pinned?: boolean }): Promise<Chat> => {
-      const value = await this.request<any>(`/v1/chats/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ title: input.title ?? 'Новый чат' }) });
+      const value = await this.request<any>(`/v1/chats/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) });
       return this.mapChat(value);
     },
     remove: async (id: string): Promise<void> => { await this.request<void>(`/v1/chats/${encodeURIComponent(id)}`, { method: 'DELETE' }); },
@@ -313,49 +413,95 @@ export class ApiWristMindService implements WristMindService {
   };
 
   private async sendMessage(input: SendMessageInput, handlers?: ChatStreamHandlers): Promise<Message> {
+    const aborted = () => new WristMindError('Генерация остановлена', { code: 'aborted' });
+    if (input.signal?.aborted) throw aborted();
+    // Let acceptance finish even when Stop is pressed during POST: its job id
+    // is needed to cancel the server's work rather than only the local fetch.
     const job = await this.request<ApiJob>(`/v1/chats/${encodeURIComponent(input.chat_id)}/messages`, {
       method: 'POST',
       headers: { 'X-WristMind-Client-Sent-Ms': `${Date.now()}` },
       body: JSON.stringify({
         client_request_id: input.client_message_id ?? crypto.randomUUID(),
         text: input.content,
-        // RESEARCH is the only mode the console sends; the explicit web flags
-        // remain in the contract but are no longer a user-facing choice.
         research_mode: input.research_mode === true,
         web_search: input.web_search === true,
         web_research: input.web_research === true,
       }),
     });
-    let streamed = '';
-    const response = await fetch(`${this.session.baseUrl.replace(/\/+$/, '')}/v1/jobs/${encodeURIComponent(job.id)}/events`, { headers: { Authorization: `Bearer ${this.session.token}`, Accept: 'text/event-stream' } });
-    if (!response.ok || !response.body) throw apiError(response.status, 'Не удалось открыть поток ответа');
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    const consume = (block: string) => {
-      let event = 'message';
-      const data: string[] = [];
-      for (const line of block.split('\n')) { if (line.startsWith('event:')) event = line.slice(6).trim(); if (line.startsWith('data:')) data.push(line.slice(5).trimStart()); }
-      if (!data.length) return;
-      let payload: any = {}; try { payload = JSON.parse(data.join('\n')); } catch { payload = { value: data.join('\n') }; }
-      if (event === 'state') { const current = phase(payload.state); if (current) handlers?.onPhase?.('', current); }
-      if (event === 'delta' && typeof payload.text === 'string') { streamed += payload.text; handlers?.onDelta?.('', payload.text); }
-      if (event === 'error') handlers?.onError?.('', payload.detail ?? 'Не удалось сформировать ответ');
+    let cancellation: Promise<void> | undefined;
+    const cancel = () => {
+      cancellation ??= this.request(`/v1/jobs/${encodeURIComponent(job.id)}/cancel`, {
+        method: 'POST', signal: AbortSignal.timeout(5000),
+      }).then(() => undefined).catch(() => undefined);
     };
-    while (true) {
-      const { done, value } = await reader.read();
-      buffer += decoder.decode(value, { stream: !done }).replaceAll('\r\n', '\n');
-      let boundary = buffer.indexOf('\n\n');
-      while (boundary >= 0) { consume(buffer.slice(0, boundary)); buffer = buffer.slice(boundary + 2); boundary = buffer.indexOf('\n\n'); }
-      if (done) break;
+    input.signal?.addEventListener('abort', cancel, { once: true });
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      if (input.signal?.aborted) { cancel(); throw aborted(); }
+      const response = await fetch(`${this.session.baseUrl.replace(/\/+$/, '')}/v1/jobs/${encodeURIComponent(job.id)}/events`, {
+        headers: { ...(this.session.token ? { Authorization: `Bearer ${this.session.token}` } : {}), Accept: 'text/event-stream' },
+        signal: input.signal,
+      });
+      if (!response.ok || !response.body) throw apiError(response.status, 'Не удалось открыть поток ответа');
+      reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let messageId: string | undefined;
+      let streamError: string | undefined;
+      let cancelled = false;
+      const consume = (block: string) => {
+        let event = 'message';
+        const data: string[] = [];
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+        }
+        if (!data.length) return;
+        let payload: any = {};
+        try { payload = JSON.parse(data.join('\n')); } catch { return; }
+        if (event === 'state') { const current = phase(payload.state); if (current) handlers?.onPhase?.('', current); }
+        if (event === 'delta' && typeof payload.text === 'string') handlers?.onDelta?.('', payload.text);
+        if (event === 'complete' && typeof payload.message_id === 'string') messageId = payload.message_id;
+        if (event === 'error') streamError = typeof payload.detail === 'string' ? payload.detail : 'Не удалось сформировать ответ';
+        if (event === 'cancelled') cancelled = true;
+      };
+      while (true) {
+        const { done, value } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        // Normalise after joining chunks: CR and LF may arrive separately.
+        buffer = buffer.replaceAll('\r\n', '\n');
+        let boundary = buffer.indexOf('\n\n');
+        while (boundary >= 0) {
+          consume(buffer.slice(0, boundary)); buffer = buffer.slice(boundary + 2);
+          boundary = buffer.indexOf('\n\n');
+        }
+        if (done) break;
+      }
+      if (buffer.trim()) consume(buffer);
+      if (input.signal?.aborted || cancelled) throw aborted();
+      if (streamError) throw new WristMindError(streamError, { code: 'server' });
+      if (!messageId) {
+        const current = await this.request<ApiJob>(`/v1/jobs/${encodeURIComponent(job.id)}`, { signal: input.signal });
+        if (current.status === 'cancelled') throw aborted();
+        if (current.status === 'failed') throw new WristMindError(current.error ?? 'Не удалось сформировать ответ', { code: 'server' });
+        if (current.status !== 'complete' || typeof current.result.message_id !== 'string') {
+          throw new WristMindError('Соединение с ответом прервалось. История обновится после подключения.', { code: 'network' });
+        }
+        messageId = current.result.message_id;
+      }
+      const messages = (await this.request<ApiMessage[]>(`/v1/chats/${encodeURIComponent(input.chat_id)}/messages`, { signal: input.signal })).map(item => this.mapMessage(item));
+      const final = messages.find(item => item.id === messageId && item.role === 'assistant');
+      if (!final) throw new WristMindError('Не удалось загрузить текущий ответ', { code: 'server' });
+      handlers?.onFinal?.(final);
+      return final;
+    } catch (error) {
+      if (input.signal?.aborted) { cancel(); await cancellation; throw aborted(); }
+      throw error;
+    } finally {
+      input.signal?.removeEventListener('abort', cancel);
+      await reader?.cancel().catch(() => {});
+      reader?.releaseLock();
     }
-    if (buffer.trim()) consume(buffer);
-    const messages = await this.chats.messages(input.chat_id);
-    const final = [...messages].reverse().find((item) => item.role === 'assistant' && item.status !== 'generating') ?? {
-      id: `local-${job.id}`, chat_id: input.chat_id, role: 'assistant' as const, content: streamed, status: 'complete' as const, provider: null, model_id: null, usage: null, timings: null, sources: [], phases: [], created_at: new Date().toISOString(),
-    };
-    handlers?.onFinal?.(final);
-    return final;
   }
 
   knowledge = {

@@ -1,29 +1,44 @@
 /* =============================================================================
    WristMind Console — Design tokens
    -----------------------------------------------------------------------------
-   Two hand-tuned themes. Values are semantic: components never reference a raw
-   palette value, only a role (surface, border, text, accent, status).
+   Visual language: ChatGPT. Neutral monochrome surfaces separated by tone
+   rather than borders, one high-contrast action colour, and a single blue used
+   only for links and active labels — the same roles OpenAI's Apps SDK UI tokens
+   assign to their grey ramp and accent.
+
+   Reference values: https://github.com/openai/apps-sdk-ui
+     light  page #ffffff · card #f5f5f5 · border #e5e5e5 · text #0d0d0d
+     dark   page #212121 · card #2f2f2f · border #404040 · text #ececec
+
+   No webfont is loaded: ChatGPT ships the platform stack, which also removes a
+   render-blocking request from the critical path.
+
+   Values are semantic: components reference a role (surface, border, text,
+   accent, status), never a raw palette value.
+
+   Rollback point for the previous design: backups/design-v1-20261006/
    ========================================================================== */
 
 :root {
   /* ---- Typography -------------------------------------------------------- */
+  /* The platform stack, exactly as ChatGPT uses it. */
   --font-sans:
-    'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-    'Helvetica Neue', Arial, sans-serif;
+    ui-sans-serif, -apple-system, system-ui, 'Segoe UI', Roboto, 'Helvetica Neue',
+    Arial, sans-serif;
   --font-mono:
-    'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo,
-    Consolas, monospace;
+    ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono',
+    monospace;
 
-  --text-2xs: 10px;
-  --text-xs: 11px;
-  --text-sm: 12px;
-  --text-base: 13px;
-  --text-md: 14px;
-  --text-lg: 15px;
-  --text-xl: 17px;
-  --text-2xl: 20px;
-  --text-3xl: 24px;
-  --text-4xl: 30px;
+  --text-2xs: 11px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 15px;
+  --text-lg: 16px;
+  --text-xl: 18px;
+  --text-2xl: 22px;
+  --text-3xl: 26px;
+  --text-4xl: 32px;
 
   --leading-tight: 1.25;
   --leading-snug: 1.4;
@@ -35,9 +50,9 @@
   --weight-semibold: 600;
   --weight-bold: 700;
 
-  --tracking-tight: -0.011em;
+  --tracking-tight: -0.01em;
   --tracking-tighter: -0.02em;
-  --tracking-wide: 0.02em;
+  --tracking-wide: 0.01em;
   --tracking-caps: 0.06em;
 
   /* ---- Spacing (4px base) ------------------------------------------------ */
@@ -59,30 +74,30 @@
   --space-15: 64px;
   --space-16: 80px;
 
-  /* ---- Radii ------------------------------------------------------------- */
-  --radius-xs: 3px;
-  --radius-sm: 5px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --radius-xl: 10px;
-  --radius-2xl: 14px;
+  /* ---- Radii — the Apps SDK scale ---------------------------------------- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
   --radius-full: 999px;
 
   /* ---- Layout ------------------------------------------------------------ */
-  --sidebar-width: 226px;
+  --sidebar-width: 260px;
   --sidebar-width-collapsed: 60px;
   --topbar-height: 48px;
   --mobile-nav-height: 56px;
-  --content-max: 1240px;
-  --content-max-narrow: 760px;
+  --content-max: 1180px;
+  --content-max-narrow: 768px;
 
   /* ---- Motion ------------------------------------------------------------ */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
   --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
-  --duration-instant: 80ms;
-  --duration-fast: 130ms;
-  --duration-base: 180ms;
+  --duration-instant: 100ms;
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
   --duration-slow: 280ms;
 
   /* ---- Z-index ----------------------------------------------------------- */
@@ -97,184 +112,208 @@
 }
 
 /* =============================================================================
-   Dark theme
+   Dark theme — ChatGPT's dark surface hierarchy.
+   The rail sits below the canvas; cards and the composer sit above it. Elevation
+   is expressed by getting lighter, which is the only cue that reads on dark.
    ========================================================================== */
 
 [data-theme='dark'] {
   color-scheme: dark;
 
-  --bg-canvas: #0b0c0f;
-  --bg-surface: #131418;
-  --bg-surface-raised: #191b20;
-  --bg-inset: #0e0f13;
-  --bg-hover: rgba(255, 255, 255, 0.045);
-  --bg-active: rgba(255, 255, 255, 0.075);
-  --bg-selected: rgba(255, 255, 255, 0.085);
-  --bg-scrim: rgba(6, 7, 9, 0.68);
-  --bg-skeleton: rgba(255, 255, 255, 0.055);
+  /* The chat canvas is the darkest plane; the rail steps up to grey and form
+     fields step up again, so a control is always lighter than the surface it
+     sits on. `--bg-shell` is the frame every other page sits on: painting the
+     whole application with the chat canvas turned the empty strip above each
+     page into a black bar. */
+  --bg-canvas: #0a0a0a;
+  --bg-shell: #141414;
+  --bg-sidebar: #1a1a1a;
+  --bg-surface: #212121;
+  --bg-surface-raised: #2f2f2f;
+  --bg-inset: #121212;
+  --bg-hover: rgba(255, 255, 255, 0.08);
+  --bg-active: rgba(255, 255, 255, 0.13);
+  --bg-selected: rgba(255, 255, 255, 0.15);
+  --bg-scrim: rgba(0, 0, 0, 0.62);
+  --bg-skeleton: rgba(255, 255, 255, 0.08);
 
-  --border-muted: rgba(255, 255, 255, 0.055);
-  --border-default: rgba(255, 255, 255, 0.095);
-  --border-strong: rgba(255, 255, 255, 0.16);
+  --border-muted: rgba(255, 255, 255, 0.07);
+  --border-default: rgba(255, 255, 255, 0.13);
+  --border-strong: rgba(255, 255, 255, 0.24);
+  /* Field outlines need a perceivable edge: a filled control on a panel is only
+     one tone step lighter, which reads as no control at all on dark. This is
+     deliberately stronger than the elevation hairlines. */
+  --border-field: rgba(255, 255, 255, 0.3);
 
-  --text-primary: #eceef1;
-  --text-secondary: #a6adb8;
-  --text-muted: #7d848f;
-  --text-faint: #5c626c;
-  --text-inverse: #0b0c0f;
+  --text-primary: #f2f2f2;
+  --text-secondary: #c8c8c8;
+  --text-muted: #b2b2b2;
+  /* #a8a8a8 is the darkest value that still clears 4.5:1 on the raised dark
+     surface (#3d3d3d); anything dimmer fails wherever a hint lands on a card
+     rather than the canvas. */
+  --text-faint: #a8a8a8;
+  --text-inverse: #0d0d0d;
 
-  --accent: #3d8bfd;
-  --accent-hover: #5599ff;
-  --accent-active: #2f7ce8;
-  --accent-text: #6fadff;
-  --accent-soft: rgba(61, 139, 253, 0.14);
-  --accent-soft-hover: rgba(61, 139, 253, 0.2);
+  /* Blue for the things that carry an action. White on #2f6fe4 is 4.65:1, so a
+     primary label stays AA; a brighter blue would not. */
+  --accent: #2f6fe4;
+  --accent-hover: #2661d0;
+  --accent-active: #2156b8;
   --accent-contrast: #ffffff;
-  --accent-border: rgba(61, 139, 253, 0.4);
+  --accent-soft: rgba(47, 111, 228, 0.2);
+  --accent-soft-hover: rgba(47, 111, 228, 0.28);
+  --accent-border: rgba(47, 111, 228, 0.55);
 
-  --success: #34c98a;
-  --success-text: #4bd39a;
-  --success-soft: rgba(52, 201, 138, 0.14);
-  --success-border: rgba(52, 201, 138, 0.32);
-
-  --warning: #e0a33c;
-  --warning-text: #eab556;
-  --warning-soft: rgba(224, 163, 60, 0.14);
-  --warning-border: rgba(224, 163, 60, 0.32);
-
-  --danger: #ec5f5f;
-  --danger-hover: #f47575;
-  --danger-text: #f5777a;
-  --danger-soft: rgba(236, 95, 95, 0.14);
-  --danger-border: rgba(236, 95, 95, 0.34);
-
-  --info: #56a8f5;
-  --info-text: #74b8f8;
-  --info-soft: rgba(86, 168, 245, 0.13);
-
-  --neutral-soft: rgba(255, 255, 255, 0.06);
-  --neutral-text: #a6adb8;
-
-  --focus-ring: rgba(61, 139, 253, 0.55);
+  /* The blue used for links and active labels. */
+  --accent-text: #7ab8ff;
+  --focus-ring: rgba(122, 184, 255, 0.75);
   --focus-ring-offset: var(--bg-canvas);
 
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
-  --shadow-xl: 0 24px 64px rgba(0, 0, 0, 0.6), 0 4px 12px rgba(0, 0, 0, 0.45);
+  --success: #4ac08a;
+  --success-text: #5fd39c;
+  --success-soft: rgba(74, 192, 138, 0.15);
+  --success-border: rgba(74, 192, 138, 0.32);
 
-  --scrollbar-thumb: rgba(255, 255, 255, 0.13);
-  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.22);
+  --warning: #e0a33c;
+  --warning-text: #efb95f;
+  --warning-soft: rgba(224, 163, 60, 0.15);
+  --warning-border: rgba(224, 163, 60, 0.32);
 
-  --chart-grid: rgba(255, 255, 255, 0.07);
-  --chart-bar: rgba(255, 255, 255, 0.16);
+  --danger: #ef4146;
+  --danger-hover: #f45c60;
+  --danger-text: #ff8a8d;
+  --danger-soft: rgba(239, 65, 70, 0.15);
+  --danger-border: rgba(239, 65, 70, 0.34);
+
+  --info: #7ab8ff;
+  --info-text: #93c5ff;
+  --info-soft: rgba(122, 184, 255, 0.14);
+
+  --neutral-soft: rgba(255, 255, 255, 0.07);
+  --neutral-text: #b4b4b4;
+
+  /* Shadows barely read on dark; they exist only for genuinely floating layers. */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 28px rgba(0, 0, 0, 0.45);
+  --shadow-xl: 0 20px 48px rgba(0, 0, 0, 0.5);
+
+  --scrollbar-thumb: rgba(255, 255, 255, 0.16);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.26);
+
+  --chart-grid: rgba(255, 255, 255, 0.08);
+  --chart-bar: rgba(255, 255, 255, 0.2);
 }
 
 /* =============================================================================
-   Light theme
+   Light theme — white canvas, grey fills, hairline borders.
    ========================================================================== */
 
 [data-theme='light'] {
   color-scheme: light;
 
-  --bg-canvas: #f6f7f9;
-  --bg-surface: #ffffff;
-  --bg-surface-raised: #ffffff;
-  --bg-inset: #f2f3f6;
-  --bg-hover: rgba(15, 20, 30, 0.04);
-  --bg-active: rgba(15, 20, 30, 0.07);
-  --bg-selected: rgba(15, 20, 30, 0.075);
-  --bg-scrim: rgba(24, 28, 36, 0.42);
-  --bg-skeleton: rgba(15, 20, 30, 0.07);
+  --bg-canvas: #ffffff;
+  --bg-shell: #fafafa;
+  --bg-sidebar: #f7f7f7;
+  --bg-surface: #f0f0f0;
+  --bg-surface-raised: #f5f5f5;
+  --bg-inset: #ebebeb;
+  --bg-hover: rgba(13, 13, 13, 0.06);
+  --bg-active: rgba(13, 13, 13, 0.1);
+  --bg-selected: rgba(13, 13, 13, 0.11);
+  --bg-scrim: rgba(13, 13, 13, 0.45);
+  --bg-skeleton: rgba(13, 13, 13, 0.07);
 
-  --border-muted: rgba(15, 20, 30, 0.07);
-  --border-default: rgba(15, 20, 30, 0.12);
-  --border-strong: rgba(15, 20, 30, 0.22);
+  --border-muted: rgba(13, 13, 13, 0.08);
+  --border-default: rgba(13, 13, 13, 0.15);
+  --border-strong: rgba(13, 13, 13, 0.28);
+  --border-field: rgba(13, 13, 13, 0.34);
 
-  --text-primary: #14171c;
-  --text-secondary: #4d545f;
-  --text-muted: #6d747f;
-  --text-faint: #949aa4;
+  --text-primary: #0d0d0d;
+  --text-secondary: #4a4a4a;
+  --text-muted: #5c5c5c;
+  --text-faint: #6b6b6b;
   --text-inverse: #ffffff;
 
-  --accent: #1f6feb;
-  --accent-hover: #1a63d6;
-  --accent-active: #1657bd;
-  --accent-text: #1a5fd0;
-  --accent-soft: rgba(31, 111, 235, 0.09);
-  --accent-soft-hover: rgba(31, 111, 235, 0.14);
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-active: #1a45bd;
   --accent-contrast: #ffffff;
-  --accent-border: rgba(31, 111, 235, 0.35);
+  --accent-soft: rgba(37, 99, 235, 0.1);
+  --accent-soft-hover: rgba(37, 99, 235, 0.16);
+  --accent-border: rgba(37, 99, 235, 0.45);
 
-  --success: #17915f;
-  --success-text: #10744c;
-  --success-soft: rgba(23, 145, 95, 0.1);
-  --success-border: rgba(23, 145, 95, 0.28);
+  --accent-text: #0b57d0;
+  --focus-ring: rgba(37, 99, 235, 0.5);
+  --focus-ring-offset: var(--bg-canvas);
 
-  --warning: #b6710a;
-  --warning-text: #96590a;
-  --warning-soft: rgba(182, 113, 10, 0.1);
-  --warning-border: rgba(182, 113, 10, 0.28);
+  --success: #0f7a4f;
+  --success-text: #0b6b45;
+  --success-soft: rgba(15, 122, 79, 0.1);
+  --success-border: rgba(15, 122, 79, 0.28);
 
-  --danger: #d63d3d;
-  --danger-hover: #c0332f;
-  --danger-text: #bd3232;
-  --danger-soft: rgba(214, 61, 61, 0.09);
-  --danger-border: rgba(214, 61, 61, 0.28);
+  --warning: #a86f0c;
+  --warning-text: #8a5a08;
+  --warning-soft: rgba(168, 111, 12, 0.1);
+  --warning-border: rgba(168, 111, 12, 0.28);
 
-  --info: #1f6feb;
-  --info-text: #1a5fd0;
-  --info-soft: rgba(31, 111, 235, 0.09);
+  --danger: #d93a3f;
+  --danger-hover: #c22f34;
+  --danger-text: #b62a2f;
+  --danger-soft: rgba(217, 58, 63, 0.09);
+  --danger-border: rgba(217, 58, 63, 0.28);
 
-  --neutral-soft: rgba(15, 20, 30, 0.055);
-  --neutral-text: #4d545f;
+  --info: #0b57d0;
+  --info-text: #0b57d0;
+  --info-soft: rgba(11, 87, 208, 0.09);
 
-  --focus-ring: rgba(31, 111, 235, 0.4);
-  --focus-ring-offset: var(--bg-surface);
+  --neutral-soft: rgba(13, 13, 13, 0.06);
+  --neutral-text: #5d5d5d;
 
-  --shadow-xs: 0 1px 2px rgba(15, 20, 30, 0.06);
-  --shadow-sm: 0 1px 2px rgba(15, 20, 30, 0.07), 0 1px 3px rgba(15, 20, 30, 0.05);
-  --shadow-md: 0 4px 12px rgba(15, 20, 30, 0.09), 0 1px 3px rgba(15, 20, 30, 0.06);
-  --shadow-lg: 0 12px 28px rgba(15, 20, 30, 0.13), 0 3px 8px rgba(15, 20, 30, 0.07);
-  --shadow-xl: 0 24px 60px rgba(15, 20, 30, 0.17), 0 6px 14px rgba(15, 20, 30, 0.08);
+  --shadow-xs: 0 1px 2px rgba(13, 13, 13, 0.05);
+  --shadow-sm: 0 1px 2px rgba(13, 13, 13, 0.06);
+  --shadow-md: 0 4px 12px rgba(13, 13, 13, 0.09);
+  --shadow-lg: 0 10px 26px rgba(13, 13, 13, 0.12);
+  --shadow-xl: 0 20px 44px rgba(13, 13, 13, 0.15);
 
-  --scrollbar-thumb: rgba(15, 20, 30, 0.18);
-  --scrollbar-thumb-hover: rgba(15, 20, 30, 0.3);
+  --scrollbar-thumb: rgba(13, 13, 13, 0.18);
+  --scrollbar-thumb-hover: rgba(13, 13, 13, 0.3);
 
-  --chart-grid: rgba(15, 20, 30, 0.08);
-  --chart-bar: rgba(15, 20, 30, 0.16);
+  --chart-grid: rgba(13, 13, 13, 0.08);
+  --chart-bar: rgba(13, 13, 13, 0.18);
 }
 
 /* =============================================================================
-   Mode accent colours — per-mode identity, tuned for both themes.
-   Applied via [data-mode-color="…"]; components read --mode and --mode-soft.
+   Mode accent colours — per-mode identity chosen by the owner, kept distinct on
+   the neutral canvas. Applied via [data-mode-color="…"]; components read
+   --mode and --mode-soft.
    ========================================================================== */
 
 [data-theme='dark'] {
-  --c-blue: #5b9dff;
-  --c-cyan: #35bdd8;
-  --c-teal: #2fbfa0;
-  --c-emerald: #3fbf70;
-  --c-lime: #90bf3a;
-  --c-amber: #d9a336;
-  --c-orange: #e58448;
-  --c-rose: #ea6a88;
-  --c-pink: #dd6ec4;
-  --c-violet: #9d81f5;
+  --c-blue: #7ab8ff;
+  --c-cyan: #4cc2d8;
+  --c-teal: #45c4a8;
+  --c-emerald: #52c47e;
+  --c-lime: #a3c94f;
+  --c-amber: #e0b45a;
+  --c-orange: #e8955c;
+  --c-rose: #ef8098;
+  --c-pink: #e080cc;
+  --c-violet: #ab93f7;
 }
 
 [data-theme='light'] {
-  --c-blue: #2a6fe0;
-  --c-cyan: #0f8fa8;
-  --c-teal: #0e8d76;
-  --c-emerald: #17915f;
-  --c-lime: #5f8612;
-  --c-amber: #a86f0c;
-  --c-orange: #bd5f26;
-  --c-rose: #cc3f61;
-  --c-pink: #ab3f95;
-  --c-violet: #6f4fd8;
+  --c-blue: #0b57d0;
+  --c-cyan: #0d7d94;
+  --c-teal: #0c7a66;
+  --c-emerald: #0f7a4f;
+  --c-lime: #55790f;
+  --c-amber: #96650a;
+  --c-orange: #a85520;
+  --c-rose: #bd3555;
+  --c-pink: #a0358a;
+  --c-violet: #5c3fc4;
 }
 
 [data-mode-color='blue'] {

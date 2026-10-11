@@ -1,7 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import '@fontsource-variable/inter';
-import '@fontsource-variable/jetbrains-mono';
+// No webfont import: the console uses the platform font stack, the same choice
+// ChatGPT makes. It removes two render-blocking requests from the critical path.
 import '@/design/tokens.css';
 import '@/design/base.css';
 import { App } from '@/app/App';
@@ -14,3 +14,8 @@ createRoot(container).render(
     <App />
   </StrictMode>,
 );
+
+// Installable shell; API and private conversations remain network-only.
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => { void navigator.serviceWorker.register('/sw.js').catch(() => { /* Browser installation remains optional. */ }); });
+}

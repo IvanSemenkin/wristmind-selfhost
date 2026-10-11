@@ -1,12 +1,12 @@
 /* =============================================================================
-   Application shell: sidebar + topbar + content + mobile navigation.
+   Application shell: sidebar + content + mobile navigation.
    ========================================================================== */
 
 .shell {
   display: flex;
   height: 100dvh;
   overflow: hidden;
-  background: var(--bg-canvas);
+  background: var(--bg-shell);
 }
 
 .main {
@@ -36,8 +36,9 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  background: var(--bg-surface);
-  border-right: 1px solid var(--border-muted);
+  /* The rail is a tone step below the canvas, not a bordered box: that is how
+     ChatGPT separates the conversation list from the conversation. */
+  background: var(--bg-sidebar);
   min-height: 0;
 }
 
@@ -89,7 +90,9 @@
 }
 
 .nav {
-  flex: 1;
+  /* The rail's remaining height belongs to the conversation list, so the
+     navigation keeps its natural size and gives way first on short windows. */
+  flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
   padding: 0 var(--space-4) var(--space-6);
@@ -180,75 +183,33 @@
   white-space: nowrap;
 }
 
-/* ---- Mode shortcuts ------------------------------------------------------- */
+/* ---- Conversation list ----------------------------------------------------
+   On chat routes the rail carries the conversation list itself, exactly as
+   ChatGPT does, instead of a second column beside it. */
 
-.modeNavList {
+.railChats {
+  flex: 1 1 180px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  padding: 0 var(--space-4);
 }
 
-.modeNavItem {
-  display: flex;
-  align-items: center;
-  gap: var(--space-5);
-  padding: var(--space-3) var(--space-5);
-  border-radius: var(--radius-md);
-  color: var(--text-muted);
-  font-size: var(--text-sm);
-  transition:
-    background-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
-  min-width: 0;
-}
-
-.modeNavItem:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.modeNavItem[data-active] {
-  background: var(--mode-soft);
-  color: var(--text-primary);
-}
-
-.modeNavLabel {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.modeNavWatch {
-  width: 12px;
-  height: 12px;
-  flex: none;
-  color: var(--text-faint);
-}
-
-.modeNavEmpty {
-  padding: var(--space-3) var(--space-5);
-  font-size: var(--text-sm);
-  color: var(--text-faint);
+/* The section head reuses the rail's group-label pattern. Unlike the other
+   group actions, this one is not hover-gated: starting a chat is the primary
+   action of the workspace, so it stays visible. */
+.railChats .navGroupAction {
+  opacity: 1;
 }
 
 /* ---- Footer --------------------------------------------------------------- */
 
 .sidebarFooter {
   flex: none;
-  border-top: 1px solid var(--border-muted);
   padding: var(--space-5) var(--space-6) var(--space-6);
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
-}
-
-.footerRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
 }
 
 .degradedNotice {
@@ -259,120 +220,6 @@
 
 .degradedNotice:hover {
   text-decoration: underline;
-}
-
-/* =============================================================================
-   Topbar
-   ========================================================================== */
-
-.topbar {
-  height: var(--topbar-height);
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-7);
-  padding: 0 var(--space-7);
-  border-bottom: 1px solid var(--border-muted);
-  background: var(--bg-canvas);
-}
-
-.topbarLeft {
-  display: flex;
-  align-items: center;
-  gap: var(--space-6);
-  min-width: 0;
-  flex: 1;
-}
-
-.topbarRight {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  flex: none;
-}
-
-.mobileBrand {
-  display: none;
-  align-items: center;
-  gap: var(--space-4);
-  min-width: 0;
-}
-
-.mobileBrandName {
-  font-size: var(--text-md);
-  font-weight: var(--weight-semibold);
-  letter-spacing: var(--tracking-tighter);
-}
-
-.commandTrigger {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  /* A stable field width, but shrinkable: it can still give way on narrow
-     windows instead of pushing the row past the topbar edge. */
-  flex: 0 1 240px;
-  min-width: 0;
-  max-width: 240px;
-  height: 30px;
-  padding-inline: var(--space-5) var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-default);
-  background: var(--bg-surface);
-  color: var(--text-faint);
-  font-size: var(--text-base);
-  transition:
-    border-color var(--duration-fast) var(--ease-out),
-    background-color var(--duration-fast) var(--ease-out);
-}
-
-.commandTrigger:hover {
-  border-color: var(--border-strong);
-  background: var(--bg-hover);
-}
-
-.commandTrigger > svg {
-  width: 14px;
-  height: 14px;
-  flex: none;
-}
-
-.commandTriggerLabel {
-  flex: 1;
-  text-align: left;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.commandTriggerKbd {
-  flex: none;
-}
-
-
-.problemPill {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-4);
-  height: 26px;
-  padding-inline: var(--space-5);
-  border-radius: var(--radius-full);
-  border: 1px solid var(--warning-border);
-  background: var(--warning-soft);
-  color: var(--warning-text);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
-}
-
-.problemDot {
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-full);
-  background: var(--warning);
-}
-
-.createLabel {
-  display: inline;
 }
 
 /* =============================================================================
@@ -498,53 +345,8 @@
    Responsive
    ========================================================================== */
 
-@media (max-width: 1080px) {
-  .commandTrigger {
-    max-width: 200px;
-  }
-  .commandTriggerKbd {
-    display: none;
-  }
-}
-
 @media (max-width: 860px) {
   .sidebar {
-    display: none;
-  }
-
-  .topbar {
-    padding-inline: var(--space-5);
-    gap: var(--space-5);
-    height: 52px;
-    padding-top: env(safe-area-inset-top);
-    height: calc(52px + env(safe-area-inset-top));
-  }
-
-  .mobileBrand {
-    display: flex;
-  }
-
-  .mobileBrandName {
-    display: none;
-  }
-
-  .commandTrigger {
-    width: auto;
-    flex: 1;
-    min-width: 0;
-    height: 32px;
-  }
-
-  .commandTriggerLabel {
-    font-size: var(--text-sm);
-  }
-
-  .problemPill,
-  .topbarIcon {
-    display: none;
-  }
-
-  .createLabel {
     display: none;
   }
 
@@ -597,3 +399,21 @@
     background: var(--bg-hover);
   }
 }
+
+/* Keep the mobile chat composer inside the area above the software keyboard. */
+@media (max-width: 860px) {
+  .shell[data-chat-viewport] {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: var(--chat-viewport-top, 0px);
+    height: var(--chat-viewport-height, 100dvh);
+  }
+  .shell[data-keyboard] .mobileNav { display: none; }
+  .shell[data-keyboard] .content[data-fixed] { padding-bottom: 0; }
+}
+
+/* Chat-only app has no administrative bottom bar. */
+.shell[data-talk] .content { padding-bottom:0; }
+
+@media(max-width:860px) { .shell[data-talk][data-keyboard] [data-talk-intro] { display:none; } }

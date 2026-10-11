@@ -13,6 +13,7 @@ from wristmind_server.db_models import (
     Message,
     PushRegistration,
     ReferencedWebSource,
+    RawWebSource,
 )
 
 
@@ -866,3 +867,87 @@ def test_chat_sources_never_leak_another_chats_material(
 
     payload = client.get(f"/v1/chats/{mine['id']}/sources", headers=admin_headers).json()
     assert payload == {"working": [], "referenced": []}
+
+
+def test_chat_sources_distinguish_found_read_and_saved_without_duplicate_or_leak(
+    client: TestClient, admin_headers: dict, mode: dict,
+):
+    chat = _chat(client, admin_headers, mode)
+    other = _chat(client, admin_headers, mode)
+    base = "https://example.test/"
+
+    async def seed_found():
+        async with SessionFactory() as session:
+            for name in ("found", "read", "saved", "empty"):
+                session.add(ReferencedWebSource(chat_id=chat["id"], url=base + name,
+                                               title=name, snippet="Поисковый фрагмент"))
+            # A read in a different chat must never upgrade this chat's link.
+            session.add(RawWebSource(chat_id=other["id"], url=base + "found", title="Private",
+                                     content="Чужой текст", content_hash="a" * 64))
+            await session.commit()
+
+    asyncio.run(seed_found())
+    initial = client.get(f"/v1/chats/{chat['id']}/sources", headers=admin_headers).json()
+    assert all(row["read_at"] is None and row["character_count"] == 0 for row in initial["referenced"])
+
+    async def seed_reads():
+        async with SessionFactory() as session:
+            for name, content in (("read", "Полный текст страницы"), ("saved", "Сохранённый текст"),
+                                  ("direct", "Текст после редиректа"), ("empty", "   ")):
+                session.add(RawWebSource(chat_id=chat["id"], url=base + name, title=name,
+                                         content=content, content_hash="b" * 64))
+            session.add(KnowledgeSource(
+                mode_id=mode["id"], chat_id=chat["id"], title="saved", filename="source.txt",
+                media_type="text/plain", processing_mode="WEB", source_tier="working",
+                origin_url=base + "saved", storage_path="/tmp/wm-test-source.txt", status="ready",
+            ))
+            await session.commit()
+
+    asyncio.run(seed_reads())
+    updated = client.get(f"/v1/chats/{chat['id']}/sources", headers=admin_headers).json()
+    entries = {row["url"]: row for row in updated["referenced"]}
+    assert entries[base + "found"]["read_at"] is None
+    assert entries[base + "empty"]["read_at"] is None
+    assert entries[base + "read"]["read_at"] is not None
+    assert entries[base + "read"]["character_count"] == len("Полный текст страницы")
+    assert entries[base + "direct"]["read_at"] is not None
+    assert base + "saved" not in entries
+    assert len(updated["working"]) == 1
+    assert all("content" not in row for row in updated["referenced"])
+
+
+def test_chat_pinning_is_persisted_without_renaming(client, admin_headers, mode):
+    chat = client.post('/v1/chats', headers=admin_headers, json={'mode_id': mode['id'], 'title': 'Моя задача'}).json()
+    path = f"/v1/chats/{chat['id']}"
+    pinned = client.patch(path, headers=admin_headers, json={'pinned': True})
+    assert pinned.status_code == 200, pinned.text
+    assert pinned.json()['pinned'] is True
+    assert pinned.json()['title'] == 'Моя задача'
+    listed = next(c for c in client.get('/v1/chats', headers=admin_headers).json() if c['id'] == chat['id'])
+    assert listed['pinned'] is True
+    renamed = client.patch(path, headers=admin_headers, json={'title': ' Новое название '})
+    assert renamed.json()['title'] == 'Новое название'
+    assert renamed.json()['pinned'] is True
+    unpinned = client.patch(path, headers=admin_headers, json={'pinned': False})
+    assert unpinned.json()['pinned'] is False
+    assert unpinned.json()['title'] == 'Новое название'
+    assert client.patch(path, headers=admin_headers, json={'title': '   '}).status_code == 422
+
+
+def test_existing_chat_survives_pinned_column_migration(client, admin_headers, mode):
+    from sqlalchemy import text
+    from wristmind_server import database
+
+    chat = client.post('/v1/chats', headers=admin_headers, json={'mode_id': mode['id'], 'title': 'Старый чат'}).json()
+
+    async def migrate_legacy_table():
+        async with database.engine.begin() as connection:
+            await connection.execute(text('ALTER TABLE chats DROP COLUMN pinned'))
+        await database.init_database()
+        await database.init_database()  # Startup migration is repeatable.
+
+    asyncio.run(migrate_legacy_table())
+    chats = client.get('/v1/chats', headers=admin_headers).json()
+    restored = next(c for c in chats if c['id'] == chat['id'])
+    assert restored['title'] == 'Старый чат'
+    assert restored['pinned'] is False

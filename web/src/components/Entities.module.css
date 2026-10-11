@@ -91,30 +91,6 @@
   color: var(--warning-text);
 }
 
-.modelLabel {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-4);
-  min-width: 0;
-}
-
-.modelName {
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.modelProvider {
-  font-size: var(--text-sm);
-  color: var(--text-faint);
-  white-space: nowrap;
-}
-
-.muted {
-  color: var(--text-faint);
-}
-
 /* ---- Devices -------------------------------------------------------------- */
 
 .deviceIcon {
@@ -143,51 +119,3 @@
   color: var(--success-text);
 }
 
-.serviceIcon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  color: var(--text-faint);
-  flex: none;
-}
-
-.serviceIcon > svg {
-  width: 15px;
-  height: 15px;
-}
-
-/* ---- Meta row ------------------------------------------------------------- */
-
-.metaRow {
-  display: flex;
-  align-items: center;
-  gap: var(--space-5);
-  flex-wrap: wrap;
-  font-size: var(--text-sm);
-  color: var(--text-muted);
-  min-width: 0;
-}
-
-.metaItem {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-3);
-  white-space: nowrap;
-  min-width: 0;
-}
-
-.metaItem > svg {
-  width: 13px;
-  height: 13px;
-  color: var(--text-faint);
-  flex: none;
-}
-
-.sep {
-  width: 1px;
-  height: 11px;
-  background: var(--border-default);
-  flex: none;
-}

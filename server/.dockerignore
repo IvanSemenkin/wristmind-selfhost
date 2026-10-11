@@ -1,9 +1,0 @@
-.venv
-.venv-v2
-.pytest_cache
-__pycache__
-data
-data-v2
-tests
-deploy
-*.pyc

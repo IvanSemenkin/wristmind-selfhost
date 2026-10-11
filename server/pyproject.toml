@@ -8,10 +8,12 @@ version = "1.0.0"
 description = "WristMind multimodal assistant API"
 requires-python = ">=3.11"
 dependencies = [
+  "cryptography>=44,<47",
   "fastapi>=0.116,<1",
   "firebase-admin>=6.9,<8",
   "curl-cffi>=0.14,<1",
   "httpx>=0.28,<1",
+  "yandexcloud>=0.380,<1",
   "sqlalchemy[asyncio]>=2.0.43,<3",
   "asyncpg>=0.30,<1",
   "aiosqlite>=0.21,<1",

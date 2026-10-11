@@ -1,4 +1,4 @@
-export { describeError, isAbortError, WristMindError } from './errors';
+export { describeError, WristMindError } from './errors';
 export type { WristMindErrorCode } from './errors';
 export {
   useActions,

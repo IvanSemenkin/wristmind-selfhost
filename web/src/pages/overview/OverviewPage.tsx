@@ -90,17 +90,21 @@ export function OverviewPage() {
       ? ((stats.requestsToday - stats.requestsYesterday) / stats.requestsYesterday) * 100
       : 0;
 
+  // Usage is historical, so a row can still mention a mode that no longer
+  // exists. Such rows have no name worth showing and are dropped instead of
+  // appearing as an anonymous placeholder.
   const usageItems = stats.usage
-    .map((entry) => {
+    .flatMap((entry) => {
       const mode = modes.find((m) => m.id === entry.mode_id);
-      return {
+      if (!mode) return [];
+      return [{
         id: entry.mode_id,
-        label: mode?.name ?? 'Удалённый режим',
+        label: mode.name,
         value: entry.requests,
         display: `${formatCompact(entry.requests)} запр.`,
         meta: entry.tokens > 0 ? `${formatCompact(entry.tokens)} токенов` : 'за 14 дней',
-        color: mode ? colorFor(mode.id) : undefined,
-      };
+        color: colorFor(mode.id),
+      }];
     })
     .sort((a, b) => b.value - a.value);
 

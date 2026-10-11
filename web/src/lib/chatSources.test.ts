@@ -3,9 +3,11 @@ import { strict as assert } from 'node:assert';
 
 import {
   chatSourceCards,
+  chatSourcesRevision,
   countChatSourceKinds,
   filterChatSourceCards,
   messageSourceCards,
+  messageSourcesLabel,
   normalizeChatSources,
   normalizeSourceUrl,
   sourceMonogram,
@@ -14,6 +16,28 @@ import {
 import { extractLegacySources } from './webSources.ts';
 
 /* Run with:  npm test   (node --test --experimental-strip-types src/lib/) */
+
+test('source refresh follows completion of an existing answer, not streamed tokens', () => {
+  const pending = { id: 'answer', role: 'assistant' as const, status: 'generating' as const, content: '' };
+  const initial = chatSourcesRevision([pending]);
+  const streamed = {...pending, content: 'Первый токен'};
+  assert.equal(chatSourcesRevision([streamed]), initial);
+  assert.notEqual(chatSourcesRevision([{...pending, status: 'complete'}]), initial);
+  assert.notEqual(chatSourcesRevision([{...pending, status: 'error'}]), initial);
+});
+
+test('an old tale cannot confirm saving a new tale under the answer', () => {
+  const sources = normalizeChatSources({ working: [{id: 'kolobok', title: 'Колобок', status: 'ready'}] });
+  const message: MessageSourceContext = { timings: {
+    local_context: {working_titles: ['Колобок']}, web_search: {saved: false, saved_source_id: null},
+  }};
+  const cards = messageSourceCards(message, sources);
+  assert.equal(messageSourcesLabel(message, cards), 'Материалы чата');
+  message.timings!.web_search = {saved: true, saved_source_id: 'morozko'};
+  assert.equal(messageSourcesLabel(message, cards), 'Материалы чата');
+  message.timings!.web_search = {saved: true, saved_source_id: 'kolobok'};
+  assert.equal(messageSourcesLabel(message, cards), 'Текст сохранён в чат');
+});
 
 test('a chat without sources produces no cards', () => {
   assert.deepEqual(chatSourceCards(normalizeChatSources({ working: [], referenced: [] })), []);
@@ -149,7 +173,7 @@ test('all chat sources are a unique combined list ordered working first', () => 
     cards.map((card) => `${card.kind}:${card.title}`),
     ['working:Вики', 'referenced:Первый'],
   );
-  assert.deepEqual(countChatSourceKinds(cards), { all: 2, working: 1, referenced: 1 });
+  assert.deepEqual(countChatSourceKinds(cards), { all: 2, working: 1, read: 0, referenced: 1 });
 });
 
 test('per-answer mode returns only that answer records', () => {
@@ -305,4 +329,25 @@ test('a referenced card resolves the exact origin URL for its link', () => {
   );
 
   assert.equal(cards[0].url, url);
+});
+
+
+test('successful page reads form a separate group and update answer cards', () => {
+  const found = {id: 'found', title: 'Found', url: 'https://example.test/found', snippet: 'Search snippet'};
+  const read = {id: 'read', title: 'Read', url: 'https://example.test/read', read_at: '2026-10-08T10:00:00Z', character_count: 1000};
+  const sources = normalizeChatSources({
+    working: [{id: 'saved', title: 'Saved', origin_url: 'https://example.test/saved', status: 'ready'}],
+    referenced: [found, read, {...read, id: 'duplicate', url: 'https://example.test/saved'}],
+  });
+  const cards = chatSourceCards(sources);
+  assert.deepEqual(countChatSourceKinds(cards), {all: 3, working: 1, read: 1, referenced: 1});
+  assert.deepEqual(filterChatSourceCards(cards, 'read').map(card => card.id), ['read']);
+  assert.deepEqual(filterChatSourceCards(cards, 'referenced').map(card => card.id), ['found']);
+  const answer = {id: 'answer', web_sources: [read]};
+  const answerCards = messageSourceCards(answer, sources);
+  assert.equal(answerCards[0].kind, 'read');
+  assert.equal(messageSourcesLabel(answer, answerCards), 'Прочитаны страницы');
+  // Old backend payloads and excerpts alone must not be labelled as read.
+  const oldCards = chatSourceCards(normalizeChatSources({referenced: [found]}));
+  assert.equal(oldCards[0].kind, 'referenced');
 });

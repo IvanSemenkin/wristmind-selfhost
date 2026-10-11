@@ -42,12 +42,14 @@ export type InlineNode =
   | MathNode;
 
 export type ListItem = { checked: boolean | null; children: BlockNode[] };
+export type CalloutKind = 'important' | 'tip' | 'error' | 'example' | 'answer' | 'info';
 
 export type BlockNode =
   | { type: 'heading'; depth: number; children: InlineNode[] }
   | { type: 'paragraph'; children: InlineNode[] }
   | { type: 'list'; ordered: boolean; start: number; items: ListItem[] }
   | { type: 'blockquote'; children: BlockNode[] }
+  | { type: 'callout'; kind: CalloutKind; title: InlineNode[]; children: BlockNode[] }
   | { type: 'code'; lang: string | null; value: string }
   | { type: 'table'; align: TableAlign[]; header: InlineNode[][]; rows: InlineNode[][][] }
   | { type: 'divider' }
@@ -102,7 +104,7 @@ export function safeUrl(raw: string | null | undefined): string | null {
  * produced markup cannot carry a URL or a class chosen by the model.
  */
 export function renderMathHtml(tex: string, display: boolean): string | null {
-  const source = tex.trim();
+  const source = groupCyrillicSubscripts(tex.trim());
   if (!source) return null;
   try {
     return katex.renderToString(source, {
@@ -117,6 +119,43 @@ export function renderMathHtml(tex: string, display: boolean): string | null {
   } catch {
     return null;
   }
+}
+
+/** Russian labels after `_` form one index, not just their first letter. */
+function groupCyrillicSubscripts(tex: string): string {
+  let result = '';
+  for (let index = 0; index < tex.length;) {
+    const rest = tex.slice(index);
+    // Text commands have literal underscores; preserve their balanced body.
+    const text = /^\\text(?:normal|rm|sf|tt|bf|it)?\s*\{/.exec(rest);
+    if (text) {
+      let end = index + text[0].length;
+      let depth = 1;
+      while (end < tex.length && depth > 0) {
+        if (tex[end] === '\\') { end += 2; continue; }
+        if (tex[end] === '{') depth += 1;
+        if (tex[end] === '}') depth -= 1;
+        end += 1;
+      }
+      result += tex.slice(index, end);
+      index = end;
+      continue;
+    }
+    if (tex[index] === '\\') {
+      result += tex.slice(index, index + 2);
+      index += 2;
+      continue;
+    }
+    const subscript = /^_([А-Яа-яЁё]+)/.exec(rest);
+    if (subscript) {
+      result += `_{\\text{${subscript[1]}}}`;
+      index += subscript[0].length;
+      continue;
+    }
+    result += tex[index];
+    index += 1;
+  }
+  return result;
 }
 
 /* =============================================================================
@@ -215,6 +254,13 @@ export function extractMath(source: string): { text: string; math: Lift[] } {
     }
 
     const rest = source.slice(index);
+    // Keep notation inside link destinations and autolinks literal.
+    const url = /^(?:https?:\/\/|mailto:)[^\s<>]+/i.exec(rest);
+    if (url) {
+      out += url[0];
+      index += url[0].length;
+      continue;
+    }
     const display = /^\$\$([\s\S]+?)\$\$/.exec(rest);
     if (display) {
       push(display[1], true);
@@ -240,6 +286,16 @@ export function extractMath(source: string): { text: string; math: Lift[] } {
         index = inline.end;
         continue;
       }
+    }
+    // Model answers also contain plain physical notation such as (c_ал = 920).
+    // Recognize a single-letter variable with a Russian label, not arbitrary
+    // snake_case names or escaped underscores.
+    const previous = source[index - 1];
+    const symbol = /^[A-Za-zΑ-ω]_([А-Яа-яЁё]+)(?![\p{L}\p{N}_])/u.exec(rest);
+    if (symbol && (previous === undefined || /[\s(=+−*,;:]/.test(previous))) {
+      push(symbol[0], false);
+      index += symbol[0].length;
+      continue;
     }
     // `<sup>…</sup>` is the only raw HTML the answers legitimately carry
     // (citation markers). It becomes a real superscript element; every other
@@ -318,6 +374,48 @@ function blockNodes(tokens: Token[], math: Lift[]): BlockNode[] {
   return blocks;
 }
 
+const CALLOUT_KINDS: Record<string, CalloutKind> = {
+  важно: 'important', подсказка: 'tip', ошибка: 'error',
+  пример: 'example', ответ: 'answer', информация: 'info',
+};
+
+/** An explicit readable marker opts a quote into a card; old quotes stay quotes.
+ * Work on the existing AST so links, math, tables and fenced code keep their
+ * normal parsing and security rules, including document-wide link references.
+ */
+function calloutQuotes(children: BlockNode[]): BlockNode[] {
+  const result: BlockNode[] = [];
+  let current: Extract<BlockNode, { type: 'blockquote' | 'callout' }> | undefined;
+  for (const child of children) {
+    const first = child.type === 'paragraph' ? child.children[0] : undefined;
+    const marker = first?.type === 'text' ? /^\[(Важно|Подсказка|Ошибка|Пример|Ответ|Информация)\](?=\s|$)[ \t]*/i.exec(first.value) : null;
+    if (marker && child.type === 'paragraph') {
+      const header: InlineNode[] = [], body: InlineNode[] = [];
+      let inBody = false;
+      for (const [index, part] of child.children.entries()) {
+        const node = index === 0 && part.type === 'text'
+          ? { ...part, value: part.value.slice(marker[0].length) } : part;
+        if (inBody) { body.push(node); continue; }
+        if (node.type === 'break') { inBody = true; continue; }
+        if (node.type === 'text' && node.value.includes('\n')) {
+          const boundary = node.value.indexOf('\n');
+          if (boundary) header.push({ type: 'text', value: node.value.slice(0, boundary) });
+          const rest = node.value.slice(boundary + 1);
+          if (rest) body.push({ type: 'text', value: rest });
+          inBody = true;
+        } else if (node.type !== 'text' || node.value) header.push(node);
+      }
+      current = { type: 'callout', kind: CALLOUT_KINDS[marker[1].toLowerCase()], title: header, children: [] };
+      if (body.length) current.children.push({ type: 'paragraph', children: body });
+      result.push(current);
+    } else {
+      if (!current) { current = { type: 'blockquote', children: [] }; result.push(current); }
+      current.children.push(child);
+    }
+  }
+  return result;
+}
+
 function blockNode(token: Token, math: Lift[]): BlockNode[] {
   switch (token.type) {
     case 'space':
@@ -344,7 +442,7 @@ function blockNode(token: Token, math: Lift[]): BlockNode[] {
     }
     case 'blockquote': {
       const quote = token as Tokens.Blockquote;
-      return [{ type: 'blockquote', children: blockNodes(quote.tokens, math) }];
+      return calloutQuotes(blockNodes(quote.tokens, math));
     }
     case 'list': {
       const list = token as Tokens.List;
@@ -387,13 +485,24 @@ function blockNode(token: Token, math: Lift[]): BlockNode[] {
   }
 }
 
-/** A paragraph holding a single display formula becomes a block formula. */
+/** Display formulas get their own block even when prose touches the delimiters. */
 function paragraphBlock(children: InlineNode[]): BlockNode[] {
-  if (children.length === 1 && children[0].type === 'math' && children[0].display) {
-    return [{ type: 'math', tex: children[0].tex, display: true }];
+  const blocks: BlockNode[] = [];
+  let prose: InlineNode[] = [];
+  const flush = () => {
+    if (prose.length) blocks.push({ type: 'paragraph', children: prose });
+    prose = [];
+  };
+  for (const child of children) {
+    if (child.type === 'math' && child.display) {
+      flush();
+      blocks.push(child);
+    } else {
+      prose.push(child);
+    }
   }
-  if (!children.length) return [];
-  return [{ type: 'paragraph', children }];
+  flush();
+  return blocks;
 }
 
 function inlineNodes(tokens: Token[] | undefined, math: Lift[]): InlineNode[] {

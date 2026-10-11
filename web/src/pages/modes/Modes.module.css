@@ -49,38 +49,34 @@
 
 .card {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-6);
-  padding: var(--space-8);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-xl);
+  /* Roughly the height of a conversation row: compact, not a hairline. */
+  padding: var(--space-6) var(--space-7);
+  border-radius: var(--radius-lg);
   background: var(--bg-surface);
-  transition:
-    border-color var(--duration-fast) var(--ease-out),
-    box-shadow var(--duration-fast) var(--ease-out);
+  transition: background-color var(--duration-fast) var(--ease-out);
   min-width: 0;
   overflow: hidden;
 }
 
 .card:hover {
-  border-color: var(--border-strong);
-  box-shadow: var(--shadow-sm);
+  background: var(--bg-surface-raised);
 }
 
 .cardAccent {
   position: absolute;
   top: 0;
   left: 0;
-  right: 0;
-  height: 2px;
+  bottom: 0;
+  width: 3px;
   background: var(--mode);
 }
 
-.cardHeader {
+/* One line per mode: identity, name, watch toggle, actions. Everything else
+   about a mode belongs to the mode's own page. */
+.cardRow {
   display: flex;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-5);
   min-width: 0;
 }
 
@@ -95,9 +91,8 @@
 .cardTitle {
   flex: 1;
   min-width: 0;
-  font-size: var(--text-lg);
-  font-weight: var(--weight-semibold);
-  letter-spacing: var(--tracking-tighter);
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -105,93 +100,6 @@
 }
 
 .cardTitle:hover {
-  color: var(--accent-text);
-}
-
-.cardDescription {
-  font-size: var(--text-base);
-  color: var(--text-muted);
-  line-height: var(--leading-normal);
-  min-height: 38px;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.cardMeta {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  padding: var(--space-6) 0;
-  border-top: 1px solid var(--border-muted);
-  border-bottom: 1px solid var(--border-muted);
-}
-
-.metaItem {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-5);
-  min-width: 0;
-}
-
-.metaLabel {
-  font-size: var(--text-sm);
-  color: var(--text-faint);
-  flex: none;
-}
-
-.metaValue {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-3);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.metaValue > svg {
-  width: 13px;
-  height: 13px;
-  color: var(--text-faint);
-  flex: none;
-}
-
-.pending {
-  color: var(--text-faint);
-}
-
-.processing {
-  font-size: var(--text-xs);
-  color: var(--info-text);
-  padding: 0 5px;
-  border-radius: var(--radius-xs);
-  background: var(--info-soft);
-}
-
-.cardFooter {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-5);
-  min-width: 0;
-}
-
-.openLink {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-3);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
-  color: var(--text-muted);
-}
-
-.openLink:hover {
   color: var(--accent-text);
 }
 

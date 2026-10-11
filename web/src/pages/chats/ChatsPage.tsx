@@ -7,8 +7,9 @@ import { Conversation } from './Conversation';
 import styles from './Chats.module.css';
 
 /**
- * Two-pane chat workspace on desktop; a single pane at a time on mobile, where
- * the list and the dialog are separate screens.
+ * The conversation surface. On desktop the conversation list lives inside the
+ * navigation rail, so this route renders only the dialog; below the rail
+ * breakpoint the list becomes its own screen and the two swap places.
  */
 export function ChatsPage() {
   const { chatId } = useParams<{ chatId?: string }>();
@@ -22,7 +23,7 @@ export function ChatsPage() {
     setSearchParams({}, { replace: true });
   }, [searchParams, setSearchParams, actions]);
 
-  const showList = !isMobile || !chatId;
+  const showList = isMobile && !chatId;
   const showConversation = !isMobile || Boolean(chatId);
 
   return (

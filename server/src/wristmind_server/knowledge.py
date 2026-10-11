@@ -8,6 +8,7 @@ from pathlib import Path
 import pytesseract
 from PIL import Image
 from pypdf import PdfReader
+from .search_documents import query_numbers
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -65,6 +66,8 @@ async def extract_document(
     provider: ProviderRouter,
     settings: Settings,
 ) -> ExtractedDocument:
+    from .feature_capabilities import enabled
+    if not enabled(settings, 'digitization'): raise ValueError('Оцифровка отключена в настройках сервера')
     if processing_mode == "WEB":
         text = normalize_text(path.read_text(encoding="utf-8"))
         if not text:
@@ -122,6 +125,7 @@ def chunk_document(document: ExtractedDocument, target_chars: int = 4_000) -> li
 
 
 def cosine(left: list[float], right: list[float]) -> float:
+    if not left or len(left) != len(right): return 0.0
     dot = sum(a * b for a, b in zip(left, right))
     left_norm = math.sqrt(sum(item * item for item in left)) or 1.0
     right_norm = math.sqrt(sum(item * item for item in right)) or 1.0
@@ -134,6 +138,11 @@ def lexical_score(query: str, content: str) -> float:
         return 0.0
     content_terms = set(re.findall(r"[\w-]{2,}", content.lower()))
     return len(terms & content_terms) / len(terms)
+
+
+# How much an exact numeric identifier is worth in the ranking. The score is
+# ``semantic * 0.75 + lexical * 0.25``, so this is a strong tie-breaker.
+NUMBER_IDENTIFIER_BONUS = 0.25
 
 
 def context_fragment(chunk: KnowledgeChunk) -> str:
@@ -153,7 +162,18 @@ async def knowledge_context(
     provider: ProviderRouter,
     settings: Settings,
     chat_id: str | None = None,
+    exclude_source_ids: set[str] | None = None,
 ) -> tuple[str | None, dict[str, object]]:
+    """Build the answer context.
+
+    ``exclude_source_ids`` keeps documents the user rejected for the current
+    search task out of this turn's candidates. They stay stored and readable
+    everywhere else: exclusion is per task, never a deletion and never a verdict
+    about the document itself.
+    """
+    from .feature_capabilities import enabled
+    if not enabled(settings, 'rag'): return None, {'strategy':'disabled', 'reason':'RAG отключён в настройках сервера'}
+    excluded = {str(item) for item in (exclude_source_ids or set()) if item}
     chunks = (
         await session.scalars(
             select(KnowledgeChunk)
@@ -165,6 +185,7 @@ async def knowledge_context(
                 if chat_id is not None else KnowledgeSource.chat_id.is_(None),
                 KnowledgeSource.status == "ready",
                 KnowledgeSource.deleted_at.is_(None),
+                KnowledgeSource.id.notin_(excluded) if excluded else True,
             )
             .order_by(KnowledgeSource.created_at, KnowledgeChunk.ordinal)
         )
@@ -192,6 +213,13 @@ async def knowledge_context(
         item.source.source_tier == "working" and item.source.chat_id == chat_id
         for item in chunks
     )
+    # The chat's own material has a larger ceiling than the shared base, so a
+    # big saved document is not squeezed out by unrelated mode sources.
+    budget_limit = (
+        settings.chat_source_context_budget_tokens
+        if has_working_sources
+        else settings.retrieval_context_budget_tokens
+    )
     if total <= settings.full_context_threshold_tokens and not has_working_sources:
         context = "\n\n".join(context_fragment(item) for item in chunks)
         return context, {
@@ -212,7 +240,7 @@ async def knowledge_context(
             if item.source.source_tier == "working" and item.source.chat_id == chat_id
         ]
         candidate_tokens = sum(item.token_count for item in candidates)
-        if candidates and candidate_tokens <= settings.retrieval_context_budget_tokens:
+        if candidates and candidate_tokens <= budget_limit:
             pinned = candidates
             pinned_tokens = candidate_tokens
     pinned_source_count = len({item.source.id for item in pinned})
@@ -222,9 +250,7 @@ async def knowledge_context(
         {"full_source_count": pinned_source_count, "full_source_tokens": pinned_tokens}
         if pinned else {}
     )
-    if pinned and (
-        pinned_tokens >= settings.retrieval_context_budget_tokens or len(pinned) == len(chunks)
-    ):
+    if pinned and (pinned_tokens >= budget_limit or len(pinned) == len(chunks)):
         # Every useful chunk is already selected; semantic ranking cannot change the result.
         context = "\n\n".join(context_fragment(item) for item in pinned)
         return context, {
@@ -237,6 +263,17 @@ async def knowledge_context(
 
     pinned_ids = {item.id for item in pinned}
     query_vector = (await provider.embed([query]))[0]
+    # A named identifier ("задача 12") is not interchangeable with its word, so a
+    # chunk that carries the exact identifier outranks a slightly closer
+    # semantic neighbour. No model call: the check is textual.
+    named_numbers = query_numbers(query)
+    number_patterns = [
+        re.compile(
+            r"(?:задача|задание|глава|раздел|пункт|task|problem|chapter|section)"
+            r"\s*(?:№\s*)?" + re.escape(number) + r"\b"
+        )
+        for number in named_numbers
+    ]
     scored = []
     for item in chunks:
         if item.id in pinned_ids:
@@ -244,16 +281,20 @@ async def knowledge_context(
         embedding = list(item.embedding or [])
         semantic = cosine(query_vector, embedding) if embedding else 0.0
         score = semantic * 0.75 + lexical_score(query, item.content) * 0.25
+        if number_patterns:
+            content = item.content.casefold()
+            if any(pattern.search(content) for pattern in number_patterns):
+                score += NUMBER_IDENTIFIER_BONUS
         scored.append((score, item))
     scored.sort(key=lambda pair: pair[0], reverse=True)
     selected: list[KnowledgeChunk] = list(pinned)
     budget = pinned_tokens
     for _, item in scored:
-        if selected and budget + item.token_count > settings.retrieval_context_budget_tokens:
+        if selected and budget + item.token_count > budget_limit:
             continue
         selected.append(item)
         budget += item.token_count
-        if budget >= settings.retrieval_context_budget_tokens:
+        if budget >= budget_limit:
             break
     context = "\n\n".join(context_fragment(item) for item in selected)
     return context, {

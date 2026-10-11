@@ -33,6 +33,7 @@ object ProxyProtocol {
 }
 
 object ProxyOperations {
+    const val SPEECH_STREAM = "speech_stream"
     const val HEALTH = "health"
     const val ENROLL = "enroll"
     const val MODES = "modes"

@@ -28,6 +28,10 @@ function Overlay({ onClose, dismissible, className, label, children }: SurfacePr
   useFocusTrap(ref, true);
   useScrollLock(true);
   useEscapeKey(() => {
+    // A nested rename dialog or portalled row menu owns Escape first.
+    if (document.querySelector('[role="menu"]')) return;
+    const dialogs = document.querySelectorAll('[role="dialog"]');
+    if (dialogs[dialogs.length - 1] !== ref.current) return;
     if (dismissible) onClose();
   }, true);
 
@@ -135,6 +139,8 @@ export function Modal({
 export type DrawerSize = 'sm' | 'md' | 'lg';
 
 export interface DrawerProps {
+  side?: 'right' | 'left';
+  bodyScroll?: boolean;
   open: boolean;
   onClose: () => void;
   title?: ReactNode;
@@ -147,6 +153,8 @@ export interface DrawerProps {
 
 export function Drawer({
   open,
+  side = 'right',
+  bodyScroll = true,
   onClose,
   title,
   description,
@@ -162,7 +170,7 @@ export function Drawer({
       onClose={onClose}
       dismissible
       label={typeof title === 'string' ? title : 'Панель'}
-      className={cn(styles.drawer, styles[`drawer_${size}`])}
+      className={cn(styles.drawer, styles[`drawer_${size}`], side === 'left' && styles.drawerLeft)}
       key={size}
     >
       <>
@@ -173,7 +181,7 @@ export function Drawer({
           onClose={onClose}
           showClose
         />
-        <div className={styles.body}>{children}</div>
+        <div className={cn(styles.body, !bodyScroll && styles.bodyNoScroll)}>{children}</div>
         {footer && <footer className={styles.footer}>{footer}</footer>}
       </>
     </Overlay>

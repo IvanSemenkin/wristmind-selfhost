@@ -93,6 +93,8 @@ class WearLocalStoreTest {
         store.setActiveChatId(offline.id)
         store.saveOfflineChat(OfflineChat(offline.id, offline.modeId, offline.modeName, "create-1", false))
         store.saveFallbackExchange(FallbackExchange(offline.id, "request-1", "Вопрос", "Ответ"))
+        store.saveDraft(offline.id, "Новый вопрос")
+        store.savePending(PendingSubmission(offline.id, "pending-stable", "Новый вопрос", null, 0, SubmissionState.QUEUED))
 
         val serverChat = offline.copy(id = "server-1")
         store.migrateChat(offline.id, serverChat)
@@ -102,5 +104,9 @@ class WearLocalStoreTest {
         assertEquals("Вопрос", store.messages("server-1").single().content)
         assertEquals("server-1", store.fallbackExchanges().single().chatId)
         assertEquals(emptyList<OfflineChat>(), store.offlineChats())
+        assertEquals("Новый вопрос", store.draft(serverChat.id))
+        assertEquals("pending-stable", store.pending(serverChat.id)?.requestId)
+        assertEquals(serverChat.id, store.pending(serverChat.id)?.chatId)
+        assertEquals(null, store.pending(offline.id))
     }
 }

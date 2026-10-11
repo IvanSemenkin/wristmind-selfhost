@@ -1,0 +1,19 @@
+[
+  "server/src/wristmind_server/provider_connections.py",
+  "server/src/wristmind_server/provider_registry.py",
+  "server/src/wristmind_server/selfhost_runtime.py",
+  "server/src/wristmind_server/providers.py",
+  "server/tests/test_provider_registry.py",
+  "web/src/pages/settings/providers/providerApi.ts",
+  "web/src/pages/settings/providers/ProviderSettings.tsx",
+  "web/src/pages/settings/providers/Providers.module.css",
+  "web/src/store/clientStore.ts",
+  "server/src/wristmind_server/model_capabilities.py",
+  "web/src/pages/settings/providers/FeatureSettings.tsx",
+  "web/src/pages/settings/providers/LocalModelGuide.tsx",
+  "web/src/components/Select.tsx",
+  "web/src/components/Select.module.css",
+  "web/src/components/Menu.tsx",
+  "web/src/components/Menu.module.css",
+  "server/src/wristmind_server/feature_capabilities.py"
+]

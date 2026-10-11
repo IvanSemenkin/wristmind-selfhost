@@ -334,16 +334,52 @@ code {
 /* ---- Math --------------------------------------------------------------- */
 
 .mathInline {
+  display: inline-block;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  padding: 3px 0;
+  vertical-align: middle;
   white-space: nowrap;
+}
+
+.mathInline::-webkit-scrollbar { display: none; }
+
+@media (max-width: 480px) {
+  .paragraph { margin-bottom: var(--space-4); }
+  .list { padding-left: 18px; gap: var(--space-4); }
+  .list .list { padding-left: 16px; }
+  .listItemBody .paragraph { line-height: 1.5; }
 }
 
 .mathBlock {
   display: block;
-  margin: var(--space-5) 0;
-  padding: var(--space-4) var(--space-2);
-  overflow-x: auto;
+  margin: var(--space-3) 0;
+  padding: var(--space-2);
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
   max-width: 100%;
-  text-align: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.mathBlock::-webkit-scrollbar {
+  display: none;
+}
+
+.mathTrack {
+  width: max-content;
+  min-width: 100%;
+}
+
+.mathBlock:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: -2px;
 }
 
 .mathFallback {
@@ -358,6 +394,19 @@ code {
 }
 
 /* KaTeX display math should not add its own outer margins inside our blocks. */
-.mathBlock :global(.katex-display) {
+.mathTrack :global(.katex-display) {
   margin: 0;
+  text-align: center;
 }
+
+/* Semantic labels share one compact surface; the label itself carries meaning. */
+.answerBlock {
+  padding: var(--space-4) var(--space-6);
+  background: var(--bg-inset);
+  border-radius: var(--radius-sm);
+}
+.answerBlock[data-kind='ответ'] { background: var(--success-soft); }
+.answerBlock[data-kind='ошибка'] { background: var(--danger-soft); }
+.answerBlock[data-kind='важно'] { background: var(--warning-soft); }
+
+.chartStatus { margin: var(--space-4) 0; padding: var(--space-5); border-radius: var(--radius-sm); background: var(--bg-inset); color: var(--text-secondary); font-size: var(--text-sm); }

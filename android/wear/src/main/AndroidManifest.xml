@@ -4,6 +4,7 @@
     <uses-feature android:name="android.hardware.microphone" android:required="true" />
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_wristmind_launcher"
@@ -31,6 +32,10 @@
             <intent-filter>
                 <action android:name="com.google.android.gms.wearable.DATA_CHANGED" />
                 <data android:scheme="wear" android:host="*" android:pathPrefix="/wristmind/config/v1" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
+                <data android:scheme="wear" android:host="*" android:pathPrefix="/wristmind/install/" />
             </intent-filter>
         </service>
         <service

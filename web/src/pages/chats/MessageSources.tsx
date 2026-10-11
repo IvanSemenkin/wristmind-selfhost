@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Layers } from 'lucide-react';
-import { messageSourceCards } from '@/lib/chatSources';
+import { messageSourceCards, messageSourcesLabel } from '@/lib/chatSources';
 import type { ChatSources, Message } from '@/types';
 import styles from './MessageSources.module.css';
 
@@ -26,8 +26,6 @@ export function MessageSources({ message, chatSources, onOpen }: MessageSourcesP
     [message, chatSources],
   );
   const count = cards.length;
-  const hasSavedText = cards.some((card) => card.kind === 'working' && card.status !== null);
-  const hasUnverifiedWorking = cards.some((card) => card.kind === 'working' && card.status === null);
 
   if (count === 0) return null;
 
@@ -38,7 +36,7 @@ export function MessageSources({ message, chatSources, onOpen }: MessageSourcesP
       aria-haspopup="dialog"
     >
       <Layers aria-hidden />
-      <span>{hasSavedText ? 'Текст сохранён в чат' : hasUnverifiedWorking ? 'Источник упомянут' : 'Найдены ссылки'}</span>
+      <span>{messageSourcesLabel(message, cards)}</span>
       <span className={styles.triggerCount}>· {count}</span>
     </button>
   );

@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react';
 import { Link, useNavigate } from '@/app/router';
 import {
   BookOpen,
-  ChevronRight,
   EyeOff,
   Layers,
   MessagesSquare,
@@ -30,7 +29,7 @@ import {
   useConfirm,
   useToast,
 } from '@/components';
-import { ModelIcon, ModeDot } from '@/components/Entities';
+import { ModeDot } from '@/components/Entities';
 import { useQuickActions } from '@/app/QuickActions';
 import styles from './Modes.module.css';
 
@@ -174,18 +173,14 @@ export function ModesPage() {
       ) : (
         <div className={styles.grid}>
           {filtered.map((mode) => {
-            const model = models.find((m) => m.id === mode.response_model_id);
-            const modeSources = sources.filter((s) => s.mode_id === mode.id);
-            const ready = modeSources.filter((s) => s.status === 'ready').length;
-            const processing = modeSources.filter(
-              (s) => s.status === 'processing' || s.status === 'uploading',
-            ).length;
-            const modeChats = chats.filter((c) => c.mode_id === mode.id);
-
             return (
               <article key={mode.id} className={styles.card} data-mode-color={mode.color}>
                 <div className={styles.cardAccent} aria-hidden />
-                <header className={styles.cardHeader}>
+                {/* One thin row: identity, the name that opens the mode, the
+                    watch toggle and the actions menu. Model, source and chat
+                    counts live on the mode's own page instead of repeating on
+                    every card. */}
+                <div className={styles.cardRow}>
                   {mode.icon ? (
                     <ModeDot color={mode.color} icon={mode.icon} size="md" />
                   ) : (
@@ -194,6 +189,11 @@ export function ModesPage() {
                   <Link to={`/modes/${mode.id}`} className={styles.cardTitle}>
                     {mode.name}
                   </Link>
+                  <Switch
+                    size="sm" checked={!mode.hidden_on_watch}
+                    onChange={() => void toggleWatch(mode)}
+                    label="На часах"
+                  />
                   <Menu
                     align="end" width={236}
                     entries={[
@@ -241,50 +241,7 @@ export function ModesPage() {
                       <IconButton size="sm" label="Действия с режимом" icon={<MoreHorizontal />} />
                     }
                   />
-                </header>
-
-                <p className={styles.cardDescription}>
-                  {mode.description || 'Описание не заполнено'}
-                </p>
-
-                <div className={styles.cardMeta}>
-                  <div className={styles.metaItem}>
-                    <span className={styles.metaLabel}>Модель</span>
-                    <span className={styles.metaValue}>
-                      <ModelIcon model={model} />
-                      {model?.name ?? 'не выбрана'}
-                    </span>
-                  </div>
-                  <div className={styles.metaItem}>
-                    <span className={styles.metaLabel}>Источники</span>
-                    <span className={styles.metaValue}>
-                      <BookOpen />
-                      {ready}
-                      {modeSources.length > ready && (
-                        <span className={styles.pending}>+{modeSources.length - ready}</span>
-                      )}
-                      {processing > 0 && <span className={styles.processing}>обработка</span>}
-                    </span>
-                  </div>
-                  <div className={styles.metaItem}>
-                    <span className={styles.metaLabel}>Чаты</span>
-                    <span className={styles.metaValue}>
-                      <MessagesSquare />
-                      {modeChats.length}
-                    </span>
-                  </div>
                 </div>
-
-                <footer className={styles.cardFooter}>
-                  <Switch
-                    size="sm" checked={!mode.hidden_on_watch}
-                    onChange={() => void toggleWatch(mode)}
-                    label="На часах"
-                  />
-                  <Link to={`/modes/${mode.id}`} className={styles.openLink}>
-                    Открыть <ChevronRight />
-                  </Link>
-                </footer>
               </article>
             );
           })}

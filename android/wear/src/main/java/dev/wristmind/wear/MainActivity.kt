@@ -37,6 +37,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        rememberInstallChallenge(intent)
         screenWakeController = ScreenWakeController(this)
         setContent {
             WristMindWearApp(
@@ -44,6 +45,21 @@ class MainActivity : ComponentActivity() {
                 launchSystemSpeech = ::launchSystemSpeech,
                 vm = wearViewModel,
             )
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        rememberInstallChallenge(intent)
+    }
+
+    private fun rememberInstallChallenge(intent: Intent?) {
+        val nonce = intent?.getStringExtra("wristmind_install_nonce") ?: return
+        if (!InstallChallenge.valid(nonce)) return
+        val prefs = getSharedPreferences("wristmind_install", 0)
+        synchronized(prefs) {
+            prefs.edit().putString("nonce", nonce)
+                .putLong("expires", android.os.SystemClock.elapsedRealtime() + InstallChallenge.LIFETIME_MS).apply()
         }
     }
 

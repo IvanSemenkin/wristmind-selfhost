@@ -201,6 +201,7 @@ export class MockWristMindService implements WristMindService {
         description: input.description,
         color: input.color,
         icon: input.icon ?? null,
+        telegram_emoji_id: input.telegram_emoji_id ?? null,
         system_prompt: input.system_prompt,
         response_model_id: input.response_model_id,
         hidden_on_watch: input.hidden_on_watch,

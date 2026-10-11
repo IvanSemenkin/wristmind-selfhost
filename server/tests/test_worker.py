@@ -5,10 +5,37 @@ from sqlalchemy import select, update
 
 import wristmind_server.worker as worker
 from wristmind_server.database import SessionFactory
-from wristmind_server.db_models import Chat, Job, JobEvent
+from wristmind_server.db_models import Chat, Job, JobEvent, Message
 from wristmind_server.web_search import WebSearchResult
-from wristmind_server.worker import process_next_job
+from wristmind_server.worker import process_next_job, normalize_chat_title
 from wristmind_server.identity import CORE_IDENTITY_PROMPT
+
+
+def test_chat_title_keeps_a_five_word_title_instead_of_three():
+    # The prompt asks for 2-5 words; the normalizer must not cut a good title
+    # shorter than the prompt promised.
+    assert normalize_chat_title("Итоговый вес при поиске документов", "вопрос") == (
+        "Итоговый вес при поиске документов"
+    )
+    assert normalize_chat_title(
+        "Разбор того как именно считается итоговый вес документа", "вопрос"
+    ) == "Разбор того как именно считается"
+
+
+def test_chat_title_strips_prefix_and_quotes_and_caps_length():
+    assert normalize_chat_title('Название: «Окно релиза и откат»', "вопрос") == "Окно релиза и откат"
+    long_reply = "Экстраординарное переосмысление документации источников"
+    assert len(long_reply[:50]) == 50  # the character cap is what cuts it
+    assert normalize_chat_title(long_reply, "вопрос") == long_reply[:50].rstrip()
+
+
+def test_chat_title_falls_back_to_the_first_message():
+    # DeerFlow's fallback: an unusable reply still leaves an identifiable chat.
+    assert normalize_chat_title("", "Как считается итоговый вес при поиске") == (
+        "Как считается итоговый вес при"
+    )
+    assert normalize_chat_title("?!", "привет") == "привет чат"
+    assert normalize_chat_title("", "") == "чат"
 
 
 def test_running_answer_task_stops_after_cancel_status(client: TestClient, admin_headers: dict, mode: dict):
@@ -236,6 +263,57 @@ def test_web_route_never_calls_the_model_request_anchor(
     messages = client.get(f"/v1/chats/{chat['id']}/messages", headers=admin_headers).json()
     assert anchor_calls == []
     assert messages[-1]["timings"]["request_anchor"]["mode"] == "deterministic"
+
+
+def test_short_web_followup_uses_chat_context_for_search(
+    client: TestClient, admin_headers: dict, mode: dict, monkeypatch
+):
+    queries: list[str] = []
+    context_calls: list[str] = []
+    answer_prompts: list[str] = []
+    original_stream = worker.providers.stream_answer
+
+    async def route(*_args, **_kwargs):
+        return _web_route("web", "current_fact")
+
+    async def contextual_query(_model_id, anchor, history):
+        context_calls.append(anchor.original_request)
+        assert any("распознавание речи" in item.content for item in history)
+        return "DeepSeek распознавание речи стоимость"
+
+    async def search(_url, query, **_kwargs):
+        queries.append(query)
+        return [WebSearchResult("Речь", "https://example.org/speech", "Стоимость речи")]
+
+    async def record_stream(model_id, messages, **kwargs):
+        if any(CORE_IDENTITY_PROMPT in item["content"] for item in messages if item["role"] == "system"):
+            answer_prompts.append(messages[0]["content"])
+        async for chunk in original_stream(model_id, messages, **kwargs):
+            yield chunk
+
+    monkeypatch.setattr(worker, "choose_retrieval_route", route)
+    monkeypatch.setattr(worker, "choose_contextual_search_query", contextual_query)
+    monkeypatch.setattr(worker, "search_web", search)
+    monkeypatch.setattr(worker.providers, "stream_answer", record_stream)
+    chat = client.post("/v1/chats", headers=admin_headers, json={"mode_id": mode["id"]}).json()
+    async def seed_history():
+        async with SessionFactory() as session:
+            session.add(Message(
+                chat_id=chat["id"], role="user", content="Обсуждаем распознавание речи у DeepSeek",
+                status="complete",
+            ))
+            await session.commit()
+
+    asyncio.run(seed_history())
+    client.post(
+        f"/v1/chats/{chat['id']}/messages", headers=admin_headers,
+        json={"client_request_id": "context-web-1", "text": "Сколько стоит?"},
+    )
+    assert asyncio.run(process_next_job()) is True
+
+    assert queries == ["DeepSeek распознавание речи стоимость"]
+    assert context_calls == ["Сколько стоит?"]
+    assert any("Не перечисляй посторонние предметы" in prompt for prompt in answer_prompts)
 
 
 def test_deep_web_route_still_builds_the_model_request_anchor(

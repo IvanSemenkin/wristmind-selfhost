@@ -74,14 +74,3 @@ export function plural(count: number, one: string, few: string, many: string): s
   if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
   return many;
 }
-
-export function pluralize(count: number, one: string, few: string, many: string): string {
-  return `${formatNumber(count)} ${plural(count, one, few, many)}`;
-}
-
-/** Short relative label for chart axes: "14:00", "12 сен". */
-export function formatChartBucket(iso: string, granularity: 'hour' | 'day'): string {
-  const date = new Date(iso);
-  if (granularity === 'hour') return timeFormat.format(date);
-  return dateFormat.format(date);
-}

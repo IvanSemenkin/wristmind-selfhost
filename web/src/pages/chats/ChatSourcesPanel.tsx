@@ -27,8 +27,9 @@ import styles from './ChatSourcesPanel.module.css';
 
 const FILTERS: { id: ChatSourceFilter; label: string }[] = [
   { id: 'all', label: 'Все' },
-  { id: 'working', label: 'Рабочие' },
-  { id: 'referenced', label: 'Найденные' },
+  { id: 'working', label: 'Сохранённые' },
+  { id: 'read', label: 'Прочитанные' },
+  { id: 'referenced', label: 'Ссылки' },
 ];
 
 export interface ChatSourcesPanelProps {
@@ -78,7 +79,7 @@ function SourceCard({ card, onOpenWorking }: { card: ChatSourceCard; onOpenWorki
                   : card.status
                     ? 'Текст сохранён, обрабатывается'
                     : 'Статус не подтверждён'
-              : 'Только ссылка'}
+              : card.kind === 'read' ? 'Страница прочитана' : 'Найденная ссылка'}
           </Badge>
           {working && card.originTitle && (
             <span className={cardStyles.cardPage} title={card.originTitle}>
@@ -88,7 +89,9 @@ function SourceCard({ card, onOpenWorking }: { card: ChatSourceCard; onOpenWorki
           {created && <span className={cardStyles.cardPage}>{created}</span>}
         </span>
         {!working && card.snippet && <span className={cardStyles.cardSnippet}>{card.snippet}</span>}
-        {!working && <span className={styles.sourceNote}>Текст страницы не сохранён для дальнейшей работы.</span>}
+        {!working && <span className={styles.sourceNote}>{card.kind === 'read'
+          ? 'Текст страницы получен ботом. В рабочие материалы не добавлен.'
+          : 'Страница не прочитана ботом. Сохранена ссылка и фрагмент поисковой выдачи.'}</span>}
         {working && (
           <span className={styles.sourceActions}>
             {card.status && (
@@ -178,6 +181,7 @@ export function ChatSourcesPanel({
   const visible = useMemo(() => filterChatSourceCards(cards, filter), [cards, filter]);
 
   const workingCards = visible.filter((card) => card.kind === 'working');
+  const readCards = visible.filter((card) => card.kind === 'read');
   const referencedCards = visible.filter((card) => card.kind === 'referenced');
 
   const emptyScope = isMessage
@@ -198,7 +202,7 @@ export function ChatSourcesPanel({
       description={
         isMessage
           ? 'Материалы и страницы этого ответа.'
-          : 'Рабочие материалы этого чата и страницы, найденные в интернете. Отдельно от базы знаний режима.'
+          : 'Сохранённые материалы, прочитанные страницы и найденные ссылки этого чата. Отдельно от базы знаний режима.'
       }
     >
       {selected ? (
@@ -260,10 +264,10 @@ export function ChatSourcesPanel({
             <p className={cardStyles.note}>{emptyScope}</p>
           ) : (
             <>
-              {filter !== 'referenced' && (
+              {(filter === 'all' || filter === 'working') && (
                 <section className={styles.section}>
                   <h3 className={styles.sectionTitle}>
-                    Рабочие материалы
+                    Сохранённые материалы
                     <span className={styles.sectionCount}>{counts.working}</span>
                   </h3>
                   <CardList
@@ -272,10 +276,19 @@ export function ChatSourcesPanel({
                   />
                 </section>
               )}
-              {filter !== 'working' && (
+              {(filter === 'all' || filter === 'read') && (
                 <section className={styles.section}>
                   <h3 className={styles.sectionTitle}>
-                    Найденные в интернете
+                    Прочитанные страницы
+                    <span className={styles.sectionCount}>{counts.read}</span>
+                  </h3>
+                  <CardList cards={readCards} empty="Прочитанных страниц пока нет." onOpenWorking={openWorking} />
+                </section>
+              )}
+              {(filter === 'all' || filter === 'referenced') && (
+                <section className={styles.section}>
+                  <h3 className={styles.sectionTitle}>
+                    Найденные ссылки
                     <span className={styles.sectionCount}>{counts.referenced}</span>
                   </h3>
                   <CardList cards={referencedCards} empty={emptyReferenced} onOpenWorking={openWorking} />

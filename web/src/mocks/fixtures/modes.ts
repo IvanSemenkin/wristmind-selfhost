@@ -113,6 +113,7 @@ export const SEED_MODES: Mode[] = MODE_SPECS.map((spec) => ({
   description: spec.description,
   color: spec.color,
   icon: null,
+  telegram_emoji_id: null,
   system_prompt: spec.system_prompt,
   response_model_id: spec.response_model_id,
   hidden_on_watch: spec.hidden_on_watch,

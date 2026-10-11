@@ -6,6 +6,29 @@ from wristmind_server.fallback_app import app, settings
 from wristmind_server.fallback_auth import issue_fallback_ticket
 
 
+def test_status_reports_main_and_fallback_without_ticket(monkeypatch):
+    import wristmind_server.fallback_app as fallback_app
+
+    async def main_up():
+        return True
+
+    monkeypatch.setattr(fallback_app, "_main_available", main_up)
+    with TestClient(app) as client:
+        response = client.get("/fallback/status")
+    assert response.status_code == 200
+    assert response.json()["main"] == "up"
+    assert response.json()["fallback"] == "ok"
+    assert response.json()["updated_at"]
+
+    async def main_down():
+        return False
+
+    monkeypatch.setattr(fallback_app, "_main_available", main_down)
+    with TestClient(app) as client:
+        response = client.get("/fallback/status")
+    assert response.json()["main"] == "down"
+
+
 def test_fallback_response_is_authenticated_and_idempotent(tmp_path):
     settings.fallback_database_path = tmp_path / "fallback.sqlite3"
     ticket = issue_fallback_ticket(

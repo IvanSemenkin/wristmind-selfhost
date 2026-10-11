@@ -6,6 +6,8 @@ import hashlib
 import json
 import math
 import time
+import subprocess
+from tempfile import TemporaryDirectory
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -14,6 +16,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import httpx
+from pypdf import PdfReader
 from curl_cffi.requests import AsyncSession, RequestsError
 
 from .config import Settings, resolve_model_id
@@ -143,9 +146,17 @@ class ProviderRouter:
         timing: StreamTiming | None = None,
         thinking: bool = True,
         reuse_connection: bool = False,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         model_id = resolve_model_id(model_id)
         provider, _, remote_model = model_id.partition(":")
+        connection = next((p for p in self.settings.provider_connections if p.id == provider), None)
+        if connection and not connection.enabled:
+            raise ProviderError('Этот провайдер выключен. Включите его в настройках.')
+        if provider.startswith('p_') and connection is None:
+            raise ProviderError('Провайдер модели больше не доступен. Проверьте настройки.')
+        if provider.startswith('p_') and not self.settings.model_option(model_id):
+            raise ProviderError('Модель выключена или не добавлена. Проверьте настройки.')
         if self.settings.mock_providers:
             question = next(
                 (item["content"] for item in reversed(messages) if item["role"] == "user"),
@@ -155,8 +166,16 @@ class ProviderRouter:
             for part in answer.split(" "):
                 yield part + " "
             return
-        if provider == "openrouter":
-            headers = self._openrouter_headers()
+        if connection and provider.startswith('p_') and connection.kind not in {'gigachat', 'openrouter'}:
+            from .provider_connections import stream_connection
+            async for chunk in stream_connection(connection, remote_model, messages, max_tokens=max_tokens, timing=timing, thinking=thinking, reasoning_effort=self.settings.deepseek_reasoning_effort):
+                yield chunk
+            return
+        if provider.startswith('p_') and not (connection and connection.kind == 'openrouter'):
+            raise ProviderError('Провайдер модели больше не доступен. Проверьте настройки.')
+        if provider == "openrouter" or (connection and connection.kind == "openrouter"):
+            headers = self._openrouter_headers() if not connection else {"Authorization": "Bearer " + connection.api_key.get_secret_value()}
+            openrouter_url = connection.base_url if connection else self.settings.openrouter_base_url
             # A stable session keeps a chat on the same provider route. This
             # allows OpenRouter/provider prompt caches to reuse the unchanged
             # system prompt and preceding chat history on later turns.
@@ -173,11 +192,12 @@ class ProviderRouter:
                 _note_provider_attempt(attempt + 1)
                 try:
                     async for chunk in self._stream_openrouter(
-                        f"{self.settings.openrouter_base_url.rstrip('/')}/chat/completions",
+                        f"{openrouter_url.rstrip('/')}/chat/completions",
                         headers,
                         remote_model,
                         messages,
                         timing=timing,
+                        **({"max_tokens": max_tokens} if max_tokens is not None else {}),
                     ):
                         delivered_content = True
                         yield chunk
@@ -204,6 +224,8 @@ class ProviderRouter:
                 }
             else:
                 extra_payload = {"thinking": {"type": "disabled"}}
+            if max_tokens is not None:
+                extra_payload["max_tokens"] = max_tokens
             headers = self._deepseek_headers()
             if reuse_connection and self._router_deepseek_client is None:
                 self._router_deepseek_client = httpx.AsyncClient(timeout=CHAT_STREAM_TIMEOUT)
@@ -259,6 +281,7 @@ class ProviderRouter:
         messages: list[dict[str, str]],
         *,
         timing: StreamTiming | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         """Stream through OpenRouter with a regular browser TLS profile.
 
@@ -273,6 +296,8 @@ class ProviderRouter:
             "temperature": 0.15,
             "stream": True,
         }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         try:
             async with AsyncSession(impersonate="chrome") as client:
                 # Diagnostic mirror for a caller that observes this call through
@@ -372,6 +397,13 @@ class ProviderRouter:
             raise ProviderError("Не удалось подключиться к провайдеру") from exc
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
+        from .model_capabilities import selected, embeddings
+        choice = selected(self.settings, 'embedding')
+        if choice and texts and not self.settings.mock_providers:
+            return await embeddings(*choice, texts)
+        if self.settings.selfhost_enabled and not choice:
+            # Explicit lexical fallback; never masquerade as a remote semantic embedding.
+            return [[] for _ in texts]
         if not texts:
             return []
         if self.settings.mock_providers or not self.settings.openrouter_api_key:
@@ -394,47 +426,108 @@ class ProviderRouter:
         return [item["embedding"] for item in data]
 
     async def analyze_file(self, path: Path, media_type: str) -> str:
-        if self.settings.mock_providers or not self.settings.openrouter_api_key:
+        from .model_capabilities import selected, image_text
+        choice = selected(self.settings, 'vision')
+        if choice:
+            is_pdf = media_type == 'application/pdf' or path.suffix.lower() == '.pdf'
+            pages = await asyncio.to_thread(lambda: len(PdfReader(str(path)).pages)) if is_pdf else 1
+            if not 1 <= pages <= self.settings.max_pdf_pages: raise ProviderError('Превышен предел страниц PDF')
+            answers = []
+            for page in range(1, pages + 1):
+                data = await asyncio.to_thread(self._vision_pdf_page, path, page) if is_pdf else await asyncio.to_thread(path.read_bytes)
+                text = 'Тестовый источник' if self.settings.mock_providers else await image_text(*choice, data, 'image/png' if is_pdf else media_type)
+                answers.append(f'## Страница {page}\n\n{text}' if is_pdf else text)
+            return '\n\n'.join(answers)
+        if self.settings.selfhost_enabled: raise ProviderError('Добавьте Vision-модель в настройках для оцифровки изображений')
+        if self.settings.mock_providers or not self.settings.deepseek_api_key:
             raise ProviderError("Vision provider is not configured")
-        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-        content_type = "file" if media_type == "application/pdf" else "image_url"
-        file_value = f"data:{media_type};base64,{encoded}"
-        attachment = (
-            {"type": "file", "file": {"filename": path.name, "file_data": file_value}}
-            if content_type == "file"
-            else {"type": "image_url", "image_url": {"url": file_value}}
-        )
-        payload = {
-            "model": self.settings.vision_model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "Оцифруй источник в структурированный Markdown. Сохрани язык, "
-                                "нумерацию заданий, формулы, таблицы и подписи. Для схем и "
-                                "изображений добавь точное смысловое описание. Ничего не решай."
-                            ),
-                        },
-                        attachment,
-                    ],
-                }
-            ],
-            "temperature": 0,
-        }
+        is_pdf = media_type == "application/pdf" or path.suffix.lower() == ".pdf"
+        pages = await asyncio.to_thread(lambda: len(PdfReader(str(path)).pages)) if is_pdf else 1
+        if pages < 1 or pages > self.settings.max_pdf_pages:
+            raise ProviderError("PDF exceeds the supported page limit")
+        answers = []
+        # One session for all pages; PDFs are rendered locally, never sent as unsupported file blocks.
         async with httpx.AsyncClient(timeout=180) as client:
-            response = await client.post(
-                f"{self.settings.openrouter_base_url.rstrip('/')}/chat/completions",
-                headers=self._openrouter_headers(),
-                json=payload,
-            )
+            for page in range(1, pages + 1):
+                data = await asyncio.to_thread(self._vision_pdf_page, path, page) if is_pdf else await asyncio.to_thread(path.read_bytes)
+                image_type = "image/png" if is_pdf else media_type
+                encoded = base64.b64encode(data).decode("ascii")
+                payload = {
+                    "model": self.settings.vision_model,
+                    "thinking": {"type": "disabled"},
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": (
+                            "Оцифруй источник в структурированный Markdown. Сохрани язык, "
+                            "нумерацию заданий, формулы, таблицы и подписи. Для схем и "
+                            "изображений добавь точное смысловое описание. Ничего не решай."
+                        )},
+                        {"type": "image_url", "image_url": {
+                            "url": f"data:{image_type};base64,{encoded}", "detail": "original",
+                        }},
+                    ]}],
+                    "temperature": 0,
+                }
+                try:
+                    response = await client.post(
+                        f"{self.settings.deepseek_base_url.rstrip('/')}/chat/completions",
+                        headers=self._deepseek_headers(), json=payload,
+                    )
+                except httpx.HTTPError as exc:
+                    raise ProviderError("Не удалось подключиться к DeepSeek Vision") from exc
+                if response.status_code >= 400:
+                    raise ProviderError(f"DeepSeek Vision HTTP {response.status_code}")
+                text = response.json()["choices"][0]["message"]["content"].strip()
+                if not text:
+                    raise ProviderError("DeepSeek Vision вернул пустой результат")
+                answers.append(f"## Страница {page}\n\n{text}" if is_pdf else text)
+        return "\n\n".join(answers)
+
+    @staticmethod
+    def _vision_pdf_page(path: Path, page: int) -> bytes:
+        with TemporaryDirectory(prefix="wristmind-vision-") as directory:
+            prefix = Path(directory) / "page"
+            try:
+                subprocess.run(
+                    ["pdftoppm", "-f", str(page), "-l", str(page), "-singlefile",
+                     "-scale-to", "2000", "-png", str(path), str(prefix)],
+                    check=True, timeout=60, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                return prefix.with_suffix(".png").read_bytes()
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise ProviderError("Не удалось подготовить страницу PDF для Vision") from exc
+
+    async def transcribe_yandex(self, audio: bytes) -> str:
+        from .model_capabilities import selected, pcm_text
+        choice = selected(self.settings, 'speech')
+        if choice and choice[0].kind != 'yandex':
+            return 'Тестовая расшифровка WristMind' if self.settings.mock_providers else await pcm_text(self.settings, audio)
+        if self.settings.mock_providers:
+            return "Тестовая расшифровка WristMind"
+        if not self.settings.yandex_speechkit_api_key:
+            raise ProviderError("SpeechKit не настроен")
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(25, connect=8)) as client:
+                response = await client.post(
+                    "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize",
+                    headers={"Authorization": f"Api-Key {self.settings.yandex_speechkit_api_key.get_secret_value()}"},
+                    params={"lang": "ru-RU", "format": "lpcm", "sampleRateHertz": "16000", "rawResults": "false", "profanityFilter": "false"},
+                    content=audio,
+                )
+        except httpx.HTTPError as error:
+            raise ProviderError("Сервис распознавания временно недоступен. Попробуйте ещё раз.") from error
         if response.status_code >= 400:
-            raise ProviderError(f"Vision HTTP {response.status_code}: {response.text[:500]}")
-        return response.json()["choices"][0]["message"]["content"].strip()
+            raise ProviderError(f"SpeechKit не принял запрос (HTTP {response.status_code}). Проверьте ключ, права и баланс.")
+        try:
+            return str(response.json().get("result") or "").strip()
+        except ValueError as error:
+            raise ProviderError("Сервис распознавания вернул некорректный ответ") from error
 
     async def transcribe(self, path: Path, media_type: str) -> str:
+        from .model_capabilities import selected, audio_text
+        choice = selected(self.settings, 'speech')
+        if choice:
+            return 'Тестовая расшифровка WristMind' if self.settings.mock_providers else await audio_text(*choice, await asyncio.to_thread(path.read_bytes), media_type)
+        if self.settings.selfhost_enabled: raise ProviderError('Добавьте модель распознавания голоса в настройках')
         if self.settings.mock_providers or not self.settings.openrouter_api_key:
             return "Тестовая расшифровка WristMind"
         async with httpx.AsyncClient(timeout=120) as client:

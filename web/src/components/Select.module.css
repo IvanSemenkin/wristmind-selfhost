@@ -7,10 +7,12 @@
 .trigger {
   display: flex;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-5);
   width: 100%;
-  background: var(--bg-inset);
-  border: 1px solid var(--border-default);
+  /* Same filled-field treatment and the same visible edge as the text
+     controls, so a toolbar of selects and inputs reads consistently. */
+  background: var(--bg-surface-raised);
+  border: 1px solid var(--border-field);
   border-radius: var(--radius-md);
   padding-inline: var(--space-5);
   color: var(--text-primary);
@@ -27,22 +29,26 @@
   height: 28px;
 }
 .trigger[data-size='md'] {
-  height: 32px;
+  height: 40px;
 }
 .trigger[data-size='lg'] {
-  height: 38px;
+  height: 48px;
 }
 
 .trigger:hover:not(:disabled) {
-  border-color: var(--border-strong);
+  border-color: var(--text-muted);
 }
 
-.trigger:focus-visible,
-.trigger[aria-expanded='true'] {
-  border-color: var(--accent);
-  background: var(--bg-surface);
+/* Neutral, high-contrast focus edge — #b4b4b4 clears 3:1 on the dark canvas. */
+.trigger:focus-visible {
+  border-color: var(--text-secondary);
   box-shadow: 0 0 0 3px var(--accent-soft);
   outline: none;
+}
+
+.trigger[aria-expanded='true'] {
+  border-color: var(--text-secondary);
+  background: var(--bg-hover);
 }
 
 .trigger[data-invalid] {
@@ -63,7 +69,7 @@
 }
 
 .trigger[data-placeholder] .value {
-  color: var(--text-faint);
+  color: var(--text-muted);
 }
 
 .icon {
@@ -80,7 +86,7 @@
 .meta {
   flex: none;
   font-size: var(--text-sm);
-  color: var(--text-faint);
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -88,7 +94,7 @@
   width: 14px;
   height: 14px;
   flex: none;
-  color: var(--text-faint);
+  color: var(--text-muted);
   transition: transform var(--duration-fast) var(--ease-out);
 }
 
@@ -109,7 +115,7 @@
   align-items: flex-start;
   gap: var(--space-6);
   padding: var(--space-6) var(--space-7);
-  border: 1px solid var(--border-default);
+  border: 1px solid transparent;
   border-radius: var(--radius-lg);
   background: var(--bg-surface);
   text-align: left;
@@ -120,12 +126,10 @@
 }
 
 .option:hover {
-  border-color: var(--border-strong);
-  background: var(--bg-hover);
+  background: var(--bg-surface-raised);
 }
 
 .option[data-active] {
-  border-color: var(--accent-border);
   background: var(--accent-soft);
 }
 
@@ -168,7 +172,7 @@
 
 .optionMeta {
   font-size: var(--text-sm);
-  color: var(--text-faint);
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -176,4 +180,11 @@
   font-size: var(--text-sm);
   color: var(--text-muted);
   line-height: var(--leading-snug);
+}
+
+@media (pointer: coarse) {
+  .trigger[data-size] { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .trigger, .chevron { transition: none; }
 }

@@ -1,3 +1,4 @@
+import { TalkPage } from '@/pages/talk/TalkPage';
 import type { RouteDefinition } from './router';
 import { OverviewPage } from '@/pages/overview/OverviewPage';
 import { ChatsPage } from '@/pages/chats/ChatsPage';
@@ -30,6 +31,9 @@ import { PromptsPage } from '@/pages/prompts/PromptsPage';
 
 export const ROUTES: RouteDefinition[] = [
   { path: '/', redirect: '/main' },
+  { path: '/talk', render: () => <TalkPage /> },
+  { path: '/talk/history', render: () => <TalkPage history /> },
+  { path: '/talk/:chatId', render: () => <TalkPage /> },
   { path: '/main', render: () => <OverviewPage /> },
 
   { path: '/chats', render: () => <ChatsPage /> },

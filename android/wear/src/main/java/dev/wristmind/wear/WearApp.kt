@@ -12,12 +12,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -80,12 +82,15 @@ import kotlinx.coroutines.delay
 private const val ROUTE_PAIR = "pair"
 private const val ROUTE_CHAT = "chat"
 private const val ROUTE_HISTORY = "history"
+private const val ROUTE_SERVICE = "service"
+private const val ROUTE_DEVICE_CODE = "device_code"
 private const val ROUTE_MODES = "modes"
 private const val ROUTE_ANSWER = "answer"
 private const val ROUTE_DRAFT = "draft"
+private const val ROUTE_SPEECH = "speech"
 private const val ROUTE_SOURCE = "source"
 private const val QUICK_CHAT_MODE_NAME = "Быстрый чат"
-private const val SERVER_STATUS_REFRESH_MS = 10_000L
+private const val SERVER_STATUS_REFRESH_MS = 30_000L
 
 private object HistoryLayout {
     val controlHeight = 48.dp
@@ -114,21 +119,15 @@ fun WristMindWearApp(
     LaunchedEffect(state.draft) {
         if (state.draft.isNotEmpty()) screenWakeController.onInteraction()
     }
-    val startVoiceInput: () -> Unit = {
-        val draftBeforeSpeech = state.draft
-        screenWakeController.setOperationActive(true)
-        launchSystemSpeech { transcript ->
-            screenWakeController.setOperationActive(false)
-            transcript?.let { vm.applyRecognizedSpeech(draftBeforeSpeech, it) }
-        }
-    }
     WristMindWearTheme {
         AppScaffold(timeText = {}) {
             val navController = rememberSwipeDismissableNavController()
             val chatListState = key(state.activeChatId) {
                 rememberTransformingLazyColumnState()
             }
+            var chatOpenedAtBottom by key(state.activeChatId) { remember { mutableStateOf(false) } }
             var chatComposerHeightPx by remember { mutableIntStateOf(0) }
+            var editorTouchTargetExpanded by remember { mutableStateOf(false) }
             val startDestination = remember { if (state.paired) ROUTE_CHAT else ROUTE_PAIR }
             LaunchedEffect(state.paired) {
                 if (state.paired && navController.currentDestination?.route == ROUTE_PAIR) {
@@ -150,16 +149,44 @@ fun WristMindWearApp(
                     ChatScreen(
                         state = state,
                         listState = chatListState,
-                        composerHeightPx = chatComposerHeightPx,
-                        onComposerHeightChanged = { chatComposerHeightPx = it },
-                        onHistory = { navController.navigate(ROUTE_HISTORY); Unit },
-                        onEditDraft = { navController.navigate(ROUTE_DRAFT); Unit },
+                        initiallyPositioned = chatOpenedAtBottom,
+                        onInitiallyPositioned = { chatOpenedAtBottom = true },
+                          composerHeightPx = chatComposerHeightPx,
+                          onComposerHeightChanged = { chatComposerHeightPx = it },
+                          enlargeEditorTouchTarget = editorTouchTargetExpanded,
+                        onHistory = { chatOpenedAtBottom = false; navController.navigate(ROUTE_HISTORY) { launchSingleTop = true }; Unit },
+                          onEditDraft = {
+                              navController.navigate(ROUTE_DRAFT) {
+                                  popUpTo(ROUTE_CHAT) { inclusive = false }
+                                  launchSingleTop = true
+                              }
+                              Unit
+                          },
                         onCancelAnswer = vm::cancelCurrentAnswer,
-                        onAnswer = { id ->
-                            vm.selectAnswer(id)
-                            navController.navigate(ROUTE_ANSWER)
+                          onAnswer = { id ->
+                              vm.selectAnswer(id)
+                              editorTouchTargetExpanded = true
+                              navController.navigate(ROUTE_ANSWER)
                         },
                         onOpenSource = { navController.navigate(ROUTE_SOURCE); Unit },
+                    )
+                }
+                composable(ROUTE_SPEECH) {
+                    val draftBeforeSpeech = remember { state.draft }
+                    val chatBeforeSpeech = remember { state.activeChatId }
+                    androidx.compose.runtime.DisposableEffect(Unit) {
+                        screenWakeController.setOperationActive(true)
+                        onDispose { screenWakeController.setOperationActive(state.operationActive) }
+                    }
+                    WearSpeechScreen(
+                        request = vm::speechStream,
+                        onText = { text ->
+                            if (state.activeChatId == chatBeforeSpeech) vm.applyRecognizedSpeech(draftBeforeSpeech, text)
+                        },
+                        onClose = {
+                            if (navController.currentDestination?.route == ROUTE_SPEECH) navController.popBackStack()
+                            Unit
+                        },
                     )
                 }
                 composable(ROUTE_DRAFT) {
@@ -168,12 +195,26 @@ fun WristMindWearApp(
                         answerSearchMode = state.answerSearchMode,
                         onDraftChange = vm::updateDraft,
                         onToggleWebSearch = vm::toggleWebSearch,
-                        onVoice = startVoiceInput,
+                        onVoice = {
+                            if (state.serverVoiceAvailable) navController.navigate(ROUTE_SPEECH)
+                            else {
+                                val draftBeforeSpeech = state.draft
+                                val chatBeforeSpeech = state.activeChatId
+                                launchSystemSpeech { text ->
+                                    if (!text.isNullOrBlank() && vm.state.value.activeChatId == chatBeforeSpeech) {
+                                        vm.applyRecognizedSpeech(draftBeforeSpeech, text)
+                                    }
+                                }
+                            }
+                            Unit
+                        },
                         onDone = {
                             // updateDraft runs synchronously before this callback. The outbox
                             // clears a non-empty draft locally before starting its HTTP request.
+                            val sending = state.draft.isNotBlank() && !state.operationActive
                             vm.sendDraft()
-                            navController.popBackStack()
+                            if (sending) editorTouchTargetExpanded = false
+                            navController.popBackStack(ROUTE_CHAT, false)
                             Unit
                         },
                     )
@@ -194,7 +235,26 @@ fun WristMindWearApp(
                         },
                         onDeleteChat = vm::deleteChat,
                         onServerStatusCheck = vm::refreshServerConnectionStatus,
+                        onServiceMenu = { navController.navigate(ROUTE_SERVICE); Unit },
                     )
+                }
+                composable(ROUTE_SERVICE) {
+                    WearServiceMenuScreen(
+                        onPairingCode = {
+                            vm.createDevicePairingCode()
+                            navController.navigate(ROUTE_DEVICE_CODE)
+                        },
+                        onDiagnosticExport = {
+                            vm.exportRecentDiagnostics()
+                            navController.popBackStack()
+                        },
+                    )
+                }
+                composable(ROUTE_DEVICE_CODE) {
+                    DisposableEffect(Unit) {
+                        onDispose { vm.clearDevicePairingCode() }
+                    }
+                    WearDevicePairingCodeScreen(state, onNewCode = vm::createDevicePairingCode)
                 }
                 composable(ROUTE_MODES) {
                     ModePickerScreen(
@@ -360,11 +420,14 @@ private fun HistoryScreen(
     onChat: (String) -> Unit,
     onDeleteChat: (String) -> Unit,
     onServerStatusCheck: () -> Unit,
+    onServiceMenu: () -> Unit,
 ) {
     val listState = rememberTransformingLazyColumnState()
     val transformationSpec = rememberTransformationSpec()
     var deleteActionChatId by remember { mutableStateOf<String?>(null) }
     var deleteActionBounds by remember { mutableStateOf<Rect?>(null) }
+    val rapidTaps = remember { RapidTapTrigger() }
+    val currentServiceMenu by rememberUpdatedState(onServiceMenu)
     LaunchedEffect(listState.isScrollInProgress) {
         if (listState.isScrollInProgress) deleteActionChatId = null
     }
@@ -397,6 +460,12 @@ private fun HistoryScreen(
                 ListHeader(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .heightIn(min = HistoryLayout.controlHeight)
+                        .pointerInput(Unit) {
+                            detectTapGestures(onTap = {
+                                if (rapidTaps.onTap(SystemClock.uptimeMillis())) currentServiceMenu()
+                            })
+                        }
                         .minimumVerticalContentPadding(
                             ListHeaderDefaults.minimumTopListContentPadding,
                             ListHeaderDefaults.minimumBottomListContentPadding,
@@ -408,7 +477,9 @@ private fun HistoryScreen(
                         horizontalArrangement = Arrangement.spacedBy(7.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("История")
+                        Text(
+                            "История",
+                        )
                         Box(
                             modifier = Modifier
                                 .size(8.dp)
@@ -705,7 +776,7 @@ private fun FullAnswerScreen(
 }
 
 @Composable
-private fun wearScrollIndicator(
+internal fun wearScrollIndicator(
     state: androidx.wear.compose.foundation.lazy.TransformingLazyColumnState,
 ): (@Composable androidx.compose.foundation.layout.BoxScope.() -> Unit)? =
     if (LocalScrollCaptureInProgress.current) {
@@ -713,31 +784,3 @@ private fun wearScrollIndicator(
     } else {
         { ScrollIndicator(state = state) }
     }
-
-internal fun stageLabel(stage: ProcessingStage) = when (stage) {
-    ProcessingStage.DISCONNECTED -> "Нет связи"
-    ProcessingStage.READY -> "Готово"
-    ProcessingStage.SENDING -> "Отправка"
-    ProcessingStage.WAITING -> "Запрос принят"
-    ProcessingStage.CONTEXT -> "Контекст"
-    ProcessingStage.ROUTING -> "Выбор способа ответа"
-    ProcessingStage.USING_CHAT_SOURCE -> "Источник чата"
-    ProcessingStage.FRAMING_REQUEST -> "Уточнение задачи"
-    ProcessingStage.SOURCE_INTENT -> "Подбор материала"
-    ProcessingStage.SEARCH_QUERY -> "Уточнение запроса"
-    ProcessingStage.SEARCHING -> "Поиск источников"
-    ProcessingStage.REVIEWING_SOURCES -> "Сверка найденного"
-    ProcessingStage.OPENING_SOURCE -> "Чтение источника"
-    ProcessingStage.EVALUATING_SOURCE -> "Проверка материала"
-    ProcessingStage.EXTRACTING_SOURCE -> "Выделение фрагмента"
-    ProcessingStage.SAVING_SOURCE -> "Сохранение в чат"
-    ProcessingStage.SEARCH_NO_RESULTS -> "Источники не найдены"
-    ProcessingStage.SEARCH_UNAVAILABLE -> "Поиск недоступен"
-    ProcessingStage.RESEARCH_DRAFTING -> "Подготовка решения"
-    ProcessingStage.RESEARCH_CHECKING -> "Проверка ответа"
-    ProcessingStage.RESEARCH_REFINING -> "Улучшение ответа"
-    ProcessingStage.GENERATING -> "Формирование ответа"
-    ProcessingStage.FALLBACK_GENERATING -> "Резервный ответ"
-    ProcessingStage.COMPLETE -> "Готово"
-    ProcessingStage.ERROR -> "Ошибка"
-}

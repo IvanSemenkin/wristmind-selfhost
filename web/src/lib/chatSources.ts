@@ -3,6 +3,7 @@ import type {
   ChatSources,
   ChatWorkingSource,
   MessageWebSource,
+  Message,
 } from '../types/chat';
 import { domainFromUrl } from './webSources.ts';
 
@@ -14,15 +15,21 @@ import { domainFromUrl } from './webSources.ts';
    runtime import for `domainFromUrl` and type-only imports everywhere else, so
    nothing here needs a bundler or a path alias at runtime.
 
-   Vocabulary (the product keeps these two worlds apart):
+   Vocabulary:
      • Working Sources  — material the backend extracted for this one chat;
-     • Referenced Sources — public-web pages cited while answering in this chat.
+     • Read pages — page text was successfully obtained and cached by the server;
+     • Referenced Sources — search links with no confirmed text read.
    ========================================================================== */
 
-export type ChatSourceKind = 'working' | 'referenced';
-export type ChatSourceFilter = 'all' | 'working' | 'referenced';
+export type ChatSourceKind = 'working' | 'read' | 'referenced';
+export type ChatSourceFilter = 'all' | 'working' | 'read' | 'referenced';
 
-/** One renderable card, normalised across both source shapes. */
+/** Finalising an existing answer changes its sources without adding a message. */
+export function chatSourcesRevision(messages: Pick<Message, 'id' | 'role' | 'status'>[]): string {
+  return JSON.stringify(messages.map(({id, role, status}) => [id, role, status]));
+}
+
+/** One renderable card with its current chat source category. */
 export interface ChatSourceCard {
   /** Stable React key, unique inside a merged list. */
   key: string;
@@ -38,6 +45,7 @@ export interface ChatSourceCard {
   status: string | null;
   createdAt: string | null;
   retrievedAt: string | null;
+  readAt: string | null;
   /** The answer a referenced entry belongs to, when the backend reports it. */
   messageId: string | null;
 }
@@ -46,7 +54,21 @@ export interface ChatSourceCard {
 export interface MessageSourceContext {
   id?: string;
   web_sources?: Pick<MessageWebSource, 'id' | 'title' | 'url' | 'retrieved_at' | 'snippet'>[];
-  timings?: { local_context?: { working_titles?: string[] } | null } | null;
+  timings?: {
+    local_context?: { working_titles?: string[] } | null;
+    web_search?: { saved?: boolean; saved_source_id?: string | null } | null;
+  } | null;
+}
+
+/** Existing context is not evidence that this answer saved a new document. */
+export function messageSourcesLabel(message: MessageSourceContext, cards: ChatSourceCard[]): string {
+  const saving = message.timings?.web_search;
+  if (saving?.saved === true && saving.saved_source_id && cards.some(
+    (card) => card.kind === 'working' && card.id === saving.saved_source_id && card.status !== null,
+  )) return 'Текст сохранён в чат';
+  if (cards.some((card) => card.kind === 'working')) return 'Материалы чата';
+  if (cards.some((card) => card.kind === 'read')) return 'Прочитаны страницы';
+  return 'Найдены ссылки';
 }
 
 /* -------------------------------------------------------------------------- */
@@ -114,6 +136,8 @@ function normalizeReferencedList(value: unknown): ChatReferencedSource[] {
       snippet: text(record.snippet) || null,
       retrieved_at: text(record.retrieved_at) || null,
       message_id: text(record.message_id) || null,
+      read_at: text(record.read_at) || null,
+      character_count: typeof record.character_count === 'number' ? record.character_count : 0,
     });
   });
   return list;
@@ -147,6 +171,7 @@ function workingCard(source: ChatWorkingSource): ChatSourceCard {
     status: source.status,
     createdAt: source.created_at,
     retrievedAt: null,
+    readAt: null,
     messageId: null,
   };
 }
@@ -155,7 +180,7 @@ function referencedCard(source: ChatReferencedSource): ChatSourceCard {
   const domain = domainFromUrl(source.url) || null;
   return {
     key: `referenced:${normalizeSourceUrl(source.url) || source.id}`,
-    kind: 'referenced',
+    kind: source.read_at ? 'read' : 'referenced',
     id: source.id,
     title: source.title || domain || source.url,
     url: source.url,
@@ -165,6 +190,7 @@ function referencedCard(source: ChatReferencedSource): ChatSourceCard {
     status: null,
     createdAt: null,
     retrievedAt: source.retrieved_at,
+    readAt: source.read_at ?? null,
     messageId: source.message_id,
   };
 }
@@ -264,6 +290,7 @@ export function messageSourceCards(
       status: null,
       createdAt: null,
       retrievedAt: null,
+      readAt: null,
       messageId: message.id ?? null,
     });
   });
@@ -274,9 +301,10 @@ export function messageSourceCards(
     if (!url) return;
     const domain = domainFromUrl(url) || null;
     const title = text(source?.title) || domain || url;
+    const known = sources?.referenced.find((item) => normalizeSourceUrl(item.url) === normalizeSourceUrl(url));
     referenced.push({
       key: `referenced:${normalizeSourceUrl(url)}:${index}`,
-      kind: 'referenced',
+      kind: known?.read_at ? 'read' : 'referenced',
       id: text(source?.id) || `msg-web-${index}`,
       title,
       url,
@@ -286,6 +314,7 @@ export function messageSourceCards(
       status: null,
       createdAt: null,
       retrievedAt: text(source?.retrieved_at) || null,
+      readAt: known?.read_at ?? null,
       messageId: message.id ?? null,
     });
   });
@@ -302,6 +331,7 @@ export function filterChatSourceCards(
   filter: ChatSourceFilter,
 ): ChatSourceCard[] {
   if (filter === 'working') return cards.filter((card) => card.kind === 'working');
+  if (filter === 'read') return cards.filter((card) => card.kind === 'read');
   if (filter === 'referenced') return cards.filter((card) => card.kind === 'referenced');
   return cards;
 }
@@ -310,14 +340,17 @@ export function countChatSourceKinds(cards: ChatSourceCard[]): {
   all: number;
   working: number;
   referenced: number;
+  read: number;
 } {
   let working = 0;
   let referenced = 0;
+  let read = 0;
   for (const card of cards) {
     if (card.kind === 'working') working += 1;
+    else if (card.kind === 'read') read += 1;
     else referenced += 1;
   }
-  return { all: cards.length, working, referenced };
+  return { all: cards.length, working, read, referenced };
 }
 
 /**

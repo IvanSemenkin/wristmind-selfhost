@@ -4,12 +4,17 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
@@ -19,8 +24,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.BaselineShift
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.wear.compose.material3.MaterialTheme
@@ -31,6 +39,7 @@ internal sealed interface MarkdownBlock {
     data class Paragraph(val text: String) : MarkdownBlock
     data class ListItem(val marker: String, val text: String) : MarkdownBlock
     data class Quote(val text: String) : MarkdownBlock
+    data class Callout(val type: String, val title: String, val content: List<MarkdownBlock>) : MarkdownBlock
     data class Code(val text: String) : MarkdownBlock
     data class Math(val source: String) : MarkdownBlock
 
@@ -74,6 +83,12 @@ private val HEADING_LINE = Regex("^#{1,4}\\s+.+")
 private val BULLET_ITEM = Regex("^[-*]\\s+.+")
 private val ORDERED_ITEM = Regex("^\\d+[.)]\\s+.+")
 
+private val CALLOUT_HEADER = Regex("^\\[(Важно|Подсказка|Ошибка|Пример|Ответ|Информация)](?:\\s+(.*))?$", RegexOption.IGNORE_CASE)
+private fun quoteContent(line: String): String? {
+    val value = line.trim()
+    return if (value == ">" || value.startsWith("> ")) value.drop(1).trimStart() else null
+}
+
 /** One cell of a `|---|---|` alignment row. */
 private val TABLE_SEPARATOR_CELL = Regex("^:?-{2,}:?$")
 
@@ -106,6 +121,7 @@ internal fun parseMarkdown(source: String): List<MarkdownBlock> {
     val code = mutableListOf<String>()
     val math = mutableListOf<String>()
     var inCode = false
+    var chartFence = false
     var inMath = false
     var mathFence: String? = null
 
@@ -124,10 +140,13 @@ internal fun parseMarkdown(source: String): List<MarkdownBlock> {
         // Fenced code first: everything inside stays byte-for-byte.
         if (trimmed.startsWith("```")) {
             if (inCode) {
-                blocks += MarkdownBlock.Code(code.joinToString("\n"))
+                val value = code.joinToString("\n")
+                val summary = if (chartFence) chartSummary(value) else null
+                blocks += if (summary != null) MarkdownBlock.Paragraph(summary) else MarkdownBlock.Code(value)
                 code.clear()
             } else {
                 flushParagraph()
+                chartFence = trimmed.removePrefix("```").trim() == "chart"
             }
             inCode = !inCode
             index++
@@ -186,6 +205,27 @@ internal fun parseMarkdown(source: String): List<MarkdownBlock> {
             continue
         }
 
+        // Collect a quote before parsing its contents: a callout is one block,
+        // not a separate blue card for every quoted line.
+        if (quoteContent(raw) != null) {
+            flushParagraph()
+            val quoted = mutableListOf<String>()
+            while (index < lines.size) {
+                val line = quoteContent(lines[index]) ?: break
+                if (quoted.isNotEmpty() && CALLOUT_HEADER.matches(line)) break
+                quoted += line
+                index++
+            }
+            val header = CALLOUT_HEADER.matchEntire(quoted.first())
+            blocks += if (header != null) {
+                val type = header.groupValues[1].lowercase().replaceFirstChar { it.uppercase() }
+                MarkdownBlock.Callout(type, header.groupValues[2].trim(), parseMarkdown(quoted.drop(1).joinToString("\n")))
+            } else {
+                MarkdownBlock.Quote(quoted.joinToString("\n").trim())
+            }
+            continue
+        }
+
         // Tables: collect the whole run of pipe-bearing lines before deciding,
         // so a two-row table without a separator is still recognized.
         if (isTableCandidate(raw)) {
@@ -205,6 +245,11 @@ internal fun parseMarkdown(source: String): List<MarkdownBlock> {
         }
 
         when {
+            trimmed.startsWith("\\(") && trimmed.endsWith("\\)") &&
+                stackedFraction(trimmed.substring(2, trimmed.length - 2)) != null -> {
+                flushParagraph()
+                blocks += MarkdownBlock.Math(trimmed.substring(2, trimmed.length - 2).trim())
+            }
             trimmed.startsWith("$") && trimmed.endsWith("$") && trimmed.length > 2 -> {
                 flushParagraph()
                 blocks += MarkdownBlock.Math(trimmed.drop(1).dropLast(1))
@@ -231,7 +276,7 @@ internal fun parseMarkdown(source: String): List<MarkdownBlock> {
         }
         index++
     }
-    if (inCode && code.isNotEmpty()) blocks += MarkdownBlock.Code(code.joinToString("\n"))
+    if (inCode && code.isNotEmpty()) blocks += if (chartFence) MarkdownBlock.Paragraph("График формируется…") else MarkdownBlock.Code(code.joinToString("\n"))
     if (inMath && math.isNotEmpty()) blocks += MarkdownBlock.Math(math.joinToString("\n").trim())
     flushParagraph()
     return blocks
@@ -283,6 +328,7 @@ internal fun previewPlainText(source: String): String {
     val code = mutableListOf<String>()
     val math = mutableListOf<String>()
     var inCode = false
+    var chartFence = false
     var inMath = false
 
     fun flushParagraph() {
@@ -299,10 +345,11 @@ internal fun previewPlainText(source: String): String {
 
         if (trimmed.startsWith("```")) {
             if (inCode) {
-                if (code.isNotEmpty()) out += code.joinToString(" ")
+                if (code.isNotEmpty()) out += (if (chartFence) chartSummary(code.joinToString("\n")) else null) ?: code.joinToString(" ")
                 code.clear()
             } else {
                 flushParagraph()
+                chartFence = trimmed.removePrefix("```").trim() == "chart"
             }
             inCode = !inCode
             index++
@@ -381,13 +428,16 @@ internal fun previewPlainText(source: String): String {
             }
             trimmed.startsWith("> ") -> {
                 flushParagraph()
-                out += trimmed.drop(2).trim()
+                val text = trimmed.drop(2).trim()
+                val header = CALLOUT_HEADER.matchEntire(text)
+                out += if (header != null) header.groupValues.drop(1).filter(String::isNotBlank).joinToString(": ") else text
             }
+            trimmed == ">" -> flushParagraph()
             else -> paragraph += trimmed
         }
         index++
     }
-    if (inCode && code.isNotEmpty()) out += code.joinToString(" ")
+    if (inCode && code.isNotEmpty()) out += if (chartFence) "График формируется…" else code.joinToString(" ")
     if (inMath && math.isNotEmpty()) out += mathDisplay(math.joinToString(" "))
     flushParagraph()
     return out.joinToString(" ").trim()
@@ -492,6 +542,7 @@ internal fun MarkdownBlockView(block: MarkdownBlock, modifier: Modifier = Modifi
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
+        is MarkdownBlock.Callout -> WearCalloutView(block, modifier)
         is MarkdownBlock.Code -> Box(
             modifier.fillMaxWidth()
                 .background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(12.dp))
@@ -508,26 +559,115 @@ internal fun MarkdownBlockView(block: MarkdownBlock, modifier: Modifier = Modifi
                 .background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(12.dp))
                 .padding(10.dp),
         ) {
-            Text(
-                // One formula is one flow of text: the parts wrap naturally at the
-                // card width instead of being spread out or centred apart.
-                text = mathAnnotated(block.source, accent),
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontFamily = FontFamily.Serif,
-                    // Every Wear body style sets lineHeight == fontSize, so a
-                    // two-line system had no leading and a shifted subscript almost
-                    // touched the line below it.
-                    lineHeight = MATH_LINE_HEIGHT,
-                ),
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            val fraction = remember(block.source) { stackedFraction(block.source) }
+            if (fraction != null) {
+                StackedFractionView(fraction, accent)
+            } else {
+                Text(
+                    // Complex formulas remain one wrapping flow of text.
+                    text = mathAnnotated(block.source, accent),
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontFamily = FontFamily.Serif,
+                        lineHeight = MATH_LINE_HEIGHT,
+                    ),
+                    color = accent,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
         is MarkdownBlock.Table -> TableBlockView(block, modifier, accent)
         MarkdownBlock.Divider -> Box(
             modifier.fillMaxWidth().padding(vertical = 4.dp)
                 .background(MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(1.dp)),
         )
+    }
+}
+
+internal data class StackedFraction(
+    val before: String,
+    val numerator: String,
+    val denominator: String,
+    val after: String,
+)
+
+/** A single display fraction; available width is handled by the layout, not a character limit. */
+internal fun stackedFraction(source: String): StackedFraction? {
+    val value = source.trim()
+    val start = listOf("\\frac", "\\dfrac", "\\tfrac")
+        .map { value.indexOf(it) }
+        .filter { it >= 0 }
+        .minOrNull() ?: return slashFraction(value)
+    val commandEnd = mathCommandEnd(value, start)
+    if (value.substring(start + 1, commandEnd) !in setOf("frac", "dfrac", "tfrac")) return null
+    val numerator = value.bracedGroup(commandEnd) ?: return null
+    val denominator = value.bracedGroup(numerator.nextIndex) ?: return null
+    val before = value.substring(0, start).trimEnd()
+    val after = value.substring(denominator.nextIndex).trimStart()
+    if ('\n' in value || "\\frac" in after || "\\dfrac" in after || "\\tfrac" in after) return null
+    // Nested fractions require a recursive math layout; keep their readable fallback.
+    if (listOf(numerator.value, denominator.value).any { "\\frac" in it || "\\dfrac" in it || "\\tfrac" in it }) return null
+    return StackedFraction(before, numerator.value, denominator.value, after)
+}
+
+/** Only unambiguous, standalone parenthesized ratios; never rewrite prose or inline units. */
+private fun slashFraction(value: String): StackedFraction? {
+    val match = Regex("^([^/]*?)\\(([^()]+)\\)\\s*/\\s*\\(([^()]+)\\)([^/]*)$").matchEntire(value) ?: return null
+    val before = match.groupValues[1].trim()
+    val after = match.groupValues[4].trim()
+    if ((before.isNotEmpty() && !before.endsWith('=')) || (after.isNotEmpty() && !after.startsWith('='))) return null
+    return StackedFraction(before, match.groupValues[2], match.groupValues[3], after)
+}
+
+@Composable
+private fun StackedFractionView(fraction: StackedFraction, accent: Color, modifier: Modifier = Modifier) {
+    val style = MaterialTheme.typography.bodyMedium.copy(
+        fontFamily = FontFamily.Serif,
+        lineHeight = MATH_LINE_HEIGHT,
+    )
+    val separateAffixes = mathDisplay(fraction.before + fraction.after).length > 8
+    Column(
+        modifier = modifier.fillMaxWidth().semantics(mergeDescendants = true) {
+            contentDescription = listOf(
+                mathDisplay(fraction.before),
+                "дробь: числитель ${mathDisplay(fraction.numerator)}, знаменатель ${mathDisplay(fraction.denominator)}",
+                mathDisplay(fraction.after),
+            ).filter(String::isNotBlank).joinToString(" ")
+        },
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        if (separateAffixes && fraction.before.isNotBlank()) {
+            Text(mathAnnotated(fraction.before, accent), style = style, color = accent)
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            if (!separateAffixes && fraction.before.isNotBlank()) {
+                Text(mathAnnotated(fraction.before, accent), style = style, color = accent)
+                Spacer(Modifier.width(4.dp))
+            }
+            Column(Modifier.weight(1f, fill = false).width(IntrinsicSize.Max), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    mathAnnotated(fraction.numerator, accent),
+                    modifier = Modifier.fillMaxWidth(),
+                    style = style,
+                    color = accent,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.fillMaxWidth().height(1.dp).background(accent))
+                Text(
+                    mathAnnotated(fraction.denominator, accent),
+                    modifier = Modifier.fillMaxWidth(),
+                    style = style,
+                    color = accent,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            if (!separateAffixes && fraction.after.isNotBlank()) {
+                Spacer(Modifier.width(4.dp))
+                Text(mathAnnotated(fraction.after, accent), style = style, color = accent)
+            }
+        }
+        if (separateAffixes && fraction.after.isNotBlank()) {
+            Text(mathAnnotated(fraction.after, accent), style = style, color = accent)
+        }
     }
 }
 
@@ -648,7 +788,7 @@ internal fun inlineMarkdown(source: String, accent: Color = SignalBlue): Annotat
                 val end = source.indexOf("**", index + 2)
                 if (end > index + 2) {
                     pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
-                    append(source.substring(index + 2, end))
+                    append(inlineMarkdown(source.substring(index + 2, end), accent))
                     pop()
                     index = end + 2
                 } else append(source[index++])
@@ -685,7 +825,7 @@ internal fun inlineMarkdown(source: String, accent: Color = SignalBlue): Annotat
                 val end = source.indexOf("~~", index + 2)
                 if (end > index + 2) {
                     pushStyle(SpanStyle(textDecoration = TextDecoration.LineThrough))
-                    append(source.substring(index + 2, end))
+                    append(inlineMarkdown(source.substring(index + 2, end), accent))
                     pop()
                     index = end + 2
                 } else append(source[index++])
@@ -694,7 +834,7 @@ internal fun inlineMarkdown(source: String, accent: Color = SignalBlue): Annotat
                 val end = source.indexOf('*', index + 1)
                 if (end > index + 1) {
                     pushStyle(SpanStyle(fontStyle = FontStyle.Italic))
-                    append(source.substring(index + 1, end))
+                    append(inlineMarkdown(source.substring(index + 1, end), accent))
                     pop()
                     index = end + 1
                 } else append(source[index++])
@@ -908,7 +1048,7 @@ private fun AnnotatedString.Builder.appendMathCommand(source: String, start: Int
     }
     val name = source.substring(start + 1, end)
     return when {
-        name == "frac" -> appendMathFraction(source, end, accent)
+        name in setOf("frac", "dfrac", "tfrac") -> appendMathFraction(source, end, accent)
         name == "sqrt" -> appendMathRoot(source, end, accent)
         name == "quad" -> {
             append(' ')

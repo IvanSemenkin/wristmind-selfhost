@@ -74,6 +74,10 @@ export function MobileNav() {
         title="Ещё"
       >
         <div className={styles.moreSheet}>
+          <button type="button" className={styles.moreLink} onClick={() => { setMoreOpen(false); navigate('/talk'); }}>
+            <MessagesSquare aria-hidden />
+            <span className={styles.moreLinkText}><span>Приложение чатов</span><span className={styles.moreLinkSub}>Быстрые вопросы и общая история</span></span>
+          </button>
           <div className={styles.moreActions}>
             <button
               type="button" className={styles.moreAction}

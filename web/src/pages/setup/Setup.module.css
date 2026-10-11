@@ -1,0 +1,35 @@
+.page { min-height: 100dvh; padding: var(--space-10); display: grid; align-content: center; justify-items: center; }
+.flow { inline-size: min(100%, 480px); display: grid; gap: var(--space-10); padding-block: var(--space-10); font-size: var(--text-lg); }
+.brand { display: flex; align-items: center; gap: var(--space-6); font-weight: var(--weight-semibold); }
+.brand img { inline-size: 32px; block-size: 32px; }
+.heading { display: grid; gap: var(--space-6); }
+.heading h1 { font-size: var(--text-3xl); letter-spacing: var(--tracking-tight); }
+.muted { color: var(--text-secondary); }
+.form { display: grid; gap: var(--space-9); min-inline-size: 0; }
+.form input, .form textarea { font-size: var(--text-lg); }
+.form label { font-size: var(--text-md); }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-6); }
+.error { color: var(--danger-text); font-size: var(--text-lg); overflow-wrap: anywhere; }
+.steps { display: flex; padding: 0; margin: 0; list-style: none; gap: var(--space-4); }
+.step { flex: 1; min-inline-size: 0; border-radius: var(--radius-sm); padding: var(--space-4); text-align: center; color: var(--text-secondary); font-size: var(--text-sm); }
+.step[aria-current='step'] { background: var(--bg-surface); color: var(--text-primary); font-weight: var(--weight-semibold); }
+.note { background: var(--bg-surface); border-radius: var(--radius-lg); padding: var(--space-8); color: var(--text-secondary); font-size: var(--text-lg); }
+.answer { white-space: pre-wrap; overflow-wrap: anywhere; line-height: var(--leading-normal); }
+.address { display: block; overflow-wrap: anywhere; color: var(--text-primary); }
+@media (max-width: 540px) { .page { padding: var(--space-9); align-content: start; } .flow { padding-block: var(--space-10); } }
+.form button, .form input { min-block-size: 44px; }
+.form label { font-size: var(--text-lg); }
+
+.form .control[data-size] { height: 44px; min-block-size: 44px; }
+
+.flow > form > button, .flow > .form > button { inline-size: 100%; }
+.flow > form > .actions { justify-content: space-between; }
+.flow > form > .actions > button:last-child { flex: 1; }
+
+/* Keep the same left edge and header position throughout the wizard. */
+.page { align-content: start; padding-block: clamp(24px, 6vh, 56px); }
+.flow { gap: 24px; padding-block: 24px; }
+.form label { font-size: var(--text-md); }
+
+.modelFlow { min-inline-size: 0; }
+.modelFlow form > div:last-child > button:last-child { flex: 1; }

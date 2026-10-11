@@ -1,8 +1,8 @@
-"""Tests for the diagnostic latency trace (a local JSONL file).
+"""Tests for the diagnostic latency trace (JSONL + optional Telegram feed).
 
 These cover the diagnostic contract only: safe JSONL lines, stable
-trace_id/message_id linkage, rotation, and the guarantee that diagnostics never
-influence a turn.
+trace_id/message_id linkage, rotation, and the guarantee that a broken Telegram
+never affects the pipeline.
 """
 from __future__ import annotations
 
@@ -44,9 +44,18 @@ def _settings(tmp_path: Path, **overrides) -> Settings:
         "storage_dir": tmp_path,
         "latency_trace_path": tmp_path / "latency-trace.jsonl",
         "latency_trace_enabled": True,
+        "latency_telegram_enabled": False,
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
+
+
+@pytest.fixture(autouse=True)
+def reset_telegram_globals():
+    yield
+    latency_trace._telegram_queue = None
+    latency_trace._telegram_task = None
+    latency_trace._dropped_telegram = 0
 
 
 def _lines(path: Path) -> list[dict]:
@@ -155,6 +164,88 @@ def test_rotation_replaces_an_oversized_file(tmp_path: Path, monkeypatch) -> Non
     assert list(tmp_path.glob("latency-trace.*.jsonl"))
 
 
+def test_telegram_failure_does_not_break_recording(tmp_path: Path, monkeypatch) -> None:
+    fake = _settings(
+        tmp_path,
+        latency_telegram_enabled=True,
+        telegram_bot_token="test-token",
+        telegram_owner_id=1,
+    )
+    monkeypatch.setattr(latency_trace, "get_settings", lambda: fake)
+
+    delivered: list[dict] = []
+
+    async def broken_send(_token: str, _method: str, _payload: dict, **_kwargs):
+        delivered.append(_payload)
+        raise RuntimeError("telegram is down")
+
+    monkeypatch.setattr(latency_trace, "telegram_call", broken_send)
+
+    async def scenario() -> None:
+        latency_trace.start_telegram_worker(fake)
+        for index in range(3):
+            latency_trace.record("SERVER_FIRST_DELTA", trace_id="req-1", duration_ms=index)
+        # Give the consumer a chance to drain the queue.
+        for _ in range(50):
+            if latency_trace._telegram_queue is not None and latency_trace._telegram_queue.empty():
+                break
+            await asyncio.sleep(0.01)
+        await latency_trace.stop_telegram_worker()
+
+    asyncio.run(scenario())
+
+    # Every event was still recorded locally despite every Telegram send failing.
+    assert len(_lines(fake.latency_trace_path)) == 3
+    assert len(delivered) == 3
+
+
+def test_telegram_queue_never_blocks_the_caller(tmp_path: Path, monkeypatch) -> None:
+    fake = _settings(
+        tmp_path,
+        latency_telegram_enabled=True,
+        telegram_bot_token="test-token",
+        telegram_owner_id=1,
+    )
+    monkeypatch.setattr(latency_trace, "get_settings", lambda: fake)
+
+    async def never_sends(*_args, **_kwargs):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(latency_trace, "telegram_call", never_sends)
+
+    async def scenario() -> None:
+        latency_trace.start_telegram_worker(fake)
+        # Queue capacity is 2000; record far fewer than that and require it to
+        # stay non-blocking regardless of a stalled sender.
+        for index in range(50):
+            latency_trace.record(latency_trace.SERVER_FIRST_DELTA, trace_id="req-1", duration_ms=index)
+        assert latency_trace._telegram_queue is not None
+        await latency_trace.stop_telegram_worker()
+
+    asyncio.run(scenario())
+
+
+def test_format_event_is_compact_and_content_free(tmp_path: Path) -> None:
+    text = latency_trace.format_event(
+        {
+            "event": latency_trace.PROVIDER_FIRST_TOKEN,
+            "trace_id": "req-1",
+            "message_id": "msg-1",
+            "since_send_ms": 4820,
+            "provider_ttft_ms": 3710,
+            "route": "web",
+            "model": "deepseek:deepseek-flash",
+        }
+    )
+
+    assert text.splitlines()[0] == "⚡ PROVIDER_FIRST_TOKEN"
+    assert "trace=req-1" in text
+    assert "t=+4.82s" in text
+    assert "ttft=3.71s" in text
+    assert "route=web" in text
+    assert "model=deepseek:deepseek-flash" in text
+
+
 def test_log_status_and_reset(tmp_path: Path, monkeypatch) -> None:
     fake = _settings(tmp_path)
     monkeypatch.setattr(latency_trace, "get_settings", lambda: fake)
@@ -174,6 +265,38 @@ def test_log_status_and_reset(tmp_path: Path, monkeypatch) -> None:
     assert result["rotated"] is True
     assert latency_trace.log_status(fake)["events"] == 0
     assert Path(result["rotated_to"]).exists()
+
+
+def test_watch_diagnostics_endpoint_records_event(client, admin_headers, tmp_path, monkeypatch) -> None:
+    fake = _settings(tmp_path)
+    monkeypatch.setattr(latency_trace, "get_settings", lambda: fake)
+
+    response = client.post(
+        "/v1/diagnostics/latency",
+        headers=admin_headers,
+        json={
+            "event": "WATCH_FIRST_VISIBLE_TEXT",
+            "trace_id": "req-watch-1",
+            "elapsed_ms": 2410,
+            "stream_chars": 12,
+        },
+    )
+
+    assert response.status_code == 204
+    lines = _lines(fake.latency_trace_path)
+    assert any(
+        line["event"] == "WATCH_FIRST_VISIBLE_TEXT" and line["trace_id"] == "req-watch-1"
+        for line in lines
+    )
+
+
+def test_watch_diagnostics_endpoint_rejects_anonymous_call(client, tmp_path, monkeypatch) -> None:
+    fake = _settings(tmp_path)
+    monkeypatch.setattr(latency_trace, "get_settings", lambda: fake)
+
+    response = client.post("/v1/diagnostics/latency", json={"event": "SEND_STARTED"})
+
+    assert response.status_code in {401, 403}
 
 
 def test_full_answer_chain_shares_one_trace_id(
@@ -232,3 +355,116 @@ def test_full_answer_chain_shares_one_trace_id(
     # The answer text never leaks into the trace.
     assert not any("Пифагор" in json.dumps(line, ensure_ascii=False) for line in chain)
 
+
+def test_telegram_feed_only_carries_key_stages(tmp_path: Path, monkeypatch) -> None:
+    fake = _settings(tmp_path)
+    monkeypatch.setattr(latency_trace, "get_settings", lambda: fake)
+
+    sent: list[str] = []
+
+    async def scenario() -> None:
+        latency_trace._telegram_queue = asyncio.Queue()
+        for event in ("SSE_SUBSCRIBE_START", "ROUTER_FINISHED", "WATCH_FIRST_DELTA_RECEIVED"):
+            latency_trace.record(event, trace_id="req-1")
+        while not latency_trace._telegram_queue.empty():
+            sent.append(str(latency_trace._telegram_queue.get_nowait()))
+
+    asyncio.run(scenario())
+
+    # Technical events stay JSONL-only; the allowlisted one reaches Telegram.
+    assert len(sent) == 1
+    assert latency_trace.WATCH_FIRST_DELTA_RECEIVED in sent[0]
+    assert len(_lines(fake.latency_trace_path)) == 3
+    assert "SSE_SUBSCRIBE_START" not in latency_trace.TELEGRAM_EVENTS
+    assert "ROUTER_FINISHED" not in latency_trace.TELEGRAM_EVENTS
+    assert latency_trace.SEND_STARTED in latency_trace.TELEGRAM_EVENTS
+    assert latency_trace.WATCH_FIRST_VISIBLE_TEXT in latency_trace.TELEGRAM_EVENTS
+    assert latency_trace.ERROR in latency_trace.TELEGRAM_EVENTS
+    assert latency_trace.FALLBACK in latency_trace.TELEGRAM_EVENTS
+
+
+def test_telegram_feed_passes_allowlisted_events(tmp_path: Path, monkeypatch) -> None:
+    fake = _settings(tmp_path)
+    monkeypatch.setattr(latency_trace, "get_settings", lambda: fake)
+
+    async def scenario() -> list[dict]:
+        latency_trace._telegram_queue = asyncio.Queue()
+        for event in latency_trace.TELEGRAM_EVENTS:
+            latency_trace.record(event, trace_id="req-1")
+        queued = []
+        while not latency_trace._telegram_queue.empty():
+            queued.append(latency_trace._telegram_queue.get_nowait())
+        return queued
+
+    queued = asyncio.run(scenario())
+    assert len(queued) == len(latency_trace.TELEGRAM_EVENTS)
+    assert all(item["event"] in latency_trace.TELEGRAM_EVENTS for item in queued)
+
+
+def test_summary_omits_unknown_values_and_shortens_ids(tmp_path: Path, monkeypatch) -> None:
+    fake = _settings(tmp_path)
+    monkeypatch.setattr(latency_trace, "get_settings", lambda: fake)
+
+    latency_trace.record(
+        latency_trace.ANSWER_FINISHED,
+        trace_id="1234567890abcdef",
+        route="web",
+        total_ms=13_400,
+        provider_ttft_ms=3_710,
+        server_first_delta_ms=4_820,
+    )
+
+    metrics = latency_trace._read_trace_metrics("1234567890abcdef", fake)
+    text = latency_trace.format_summary("1234567890abcdef", metrics)
+
+    assert text.startswith("🏁 REQUEST FINISHED")
+    assert "Trace: 12345678" in text
+    assert "1234567890abcdef" not in text
+    assert "Route: web" in text
+    assert "First visible: 4.82s" in text
+    assert "Provider TTFT: 3.71s" in text
+    assert "Total: 13.40s" in text
+
+
+def test_summary_prefers_watch_first_visible_and_hides_missing(tmp_path: Path, monkeypatch) -> None:
+    fake = _settings(tmp_path)
+    monkeypatch.setattr(latency_trace, "get_settings", lambda: fake)
+
+    latency_trace.record(
+        latency_trace.WATCH_FIRST_VISIBLE_TEXT,
+        trace_id="trace-watch",
+        first_visible_text_rendered_ms=2_410,
+    )
+
+    metrics = latency_trace._read_trace_metrics("trace-watch", fake)
+    text = latency_trace.format_summary("trace-watch", metrics)
+
+    assert "First visible: 2.41s" in text
+    assert "Route:" not in text
+    assert "Provider TTFT:" not in text
+    assert "Total:" not in text
+
+
+def test_request_summary_is_scheduled_once(tmp_path: Path, monkeypatch) -> None:
+    fake = _settings(
+        tmp_path,
+        latency_telegram_enabled=True,
+        telegram_bot_token="test-token",
+        telegram_owner_id=1,
+    )
+    monkeypatch.setattr(latency_trace, "get_settings", lambda: fake)
+
+    scheduled: list[str] = []
+
+    async def scenario() -> None:
+        latency_trace.start_telegram_worker(fake)
+        monkeypatch.setattr(
+            latency_trace, "_emit_summary_later", lambda tid, delay: scheduled.append(tid) or asyncio.sleep(0)
+        )
+        latency_trace.schedule_request_summary("trace-1")
+        latency_trace.schedule_request_summary("trace-1")
+        await asyncio.sleep(0.05)
+        await latency_trace.stop_telegram_worker()
+
+    asyncio.run(scenario())
+    assert scheduled == ["trace-1"]

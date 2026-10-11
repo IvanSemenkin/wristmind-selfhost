@@ -10,14 +10,12 @@ import {
   RefreshCw,
   ScanLine,
   Trash2,
-  Upload,
 } from 'lucide-react';
 import type { JobStatus, KnowledgeSource } from '@/types';
 import { PROCESSING_MODE_LABELS, sourceKind } from '@/types';
 import { formatNumber, formatRelativeTime } from '@/lib/format';
 import {
   Badge,
-  Button,
   DataTable,
   EmptyState,
   IconButton,
@@ -119,6 +117,9 @@ export function SourcesTable({
       header: 'Обработка',
       width: '110px',
       hideBelow: 'lg',
+      /* OCR/Vision is a detail of the source's own page; on a phone it only made
+         every card taller. */
+      mobileHidden: true,
       mobileLabel: 'Обработка',
       render: (source) =>
         source.status === 'error' ? (
@@ -136,6 +137,8 @@ export function SourcesTable({
       header: 'Объём',
       width: '150px',
       hideBelow: 'md',
+      /* Page and chunk counts are shown on the source's own page. */
+      mobileHidden: true,
       mobileLabel: 'Объём',
       render: (source) =>
         source.status === 'ready' ? (
@@ -246,19 +249,5 @@ export function SourcesToolbarSummary({
         </span>
       )}
     </div>
-  );
-}
-
-export function UploadButton({
-  onClick,
-  label = 'Загрузить источник',
-}: {
-  onClick: () => void;
-  label?: string;
-}) {
-  return (
-    <Button variant="primary" iconLeft={<Upload />} onClick={onClick}>
-      {label}
-    </Button>
   );
 }

@@ -9,7 +9,7 @@ import {
   Sun,
 } from 'lucide-react';
 import { useActions } from '@/services';
-import { useModels, usePairingCodes, useSettings } from '@/store';
+import { usePairingCodes, useSettings } from '@/store';
 import { useSession } from '@/session';
 import { isPairingCodeActive } from '@/types';
 import { formatCompact, formatRelativeTime } from '@/lib/format';
@@ -30,6 +30,7 @@ import {
 } from '@/components';
 import { useTheme, type Theme } from '@/app/ThemeProvider';
 import styles from './Settings.module.css';
+import { ProviderSettings } from './providers/ProviderSettings';
 
 const HISTORY_OPTIONS = [4, 6, 8, 12, 16, 24, 32];
 const RETENTION_OPTIONS = [
@@ -42,7 +43,6 @@ const RETENTION_OPTIONS = [
 
 export function SettingsPage() {
   const settings = useSettings();
-  const models = useModels();
   const codes = usePairingCodes();
   const actions = useActions();
   const confirm = useConfirm();
@@ -113,7 +113,7 @@ export function SettingsPage() {
     const ok = await confirm({
       title: 'Отключить эту веб-панель?',
       description:
-        'Текущая сессия будет завершена, доступ к панели нужно будет восстановить новым кодом подключения. Чаты, режимы и базы знаний сохранятся.',
+        'Текущая сессия будет завершена, доступ к панели нужно будет восстановить повторным входом. Чаты, режимы и базы знаний сохранятся.',
       confirmLabel: 'Отключить панель',
       confirmPhrase: 'отключить',
       details: (
@@ -127,7 +127,7 @@ export function SettingsPage() {
     try {
       const response = await fetch(`${session.baseUrl.replace(/\/+$/, '')}/v1/devices/self`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${session.token}` },
+        headers: session.token ? { Authorization: `Bearer ${session.token}` } : { 'X-WristMind-CSRF': '1' },
       });
       if (!response.ok) throw new Error();
       window.localStorage.removeItem('wristmind.web.session');
@@ -141,7 +141,7 @@ export function SettingsPage() {
     <Page>
       <PageHeader
         title="Настройки" actions={
-          liveCodes.length > 0 ? (
+          !session.token ? <Button iconLeft={<KeyRound />} onClick={() => window.location.assign('/setup')}>Первичная настройка</Button> : liveCodes.length > 0 ? (
             <Badge tone="accent" size="md" dot>
               {liveCodes.length} активный код
             </Badge>
@@ -151,6 +151,7 @@ export function SettingsPage() {
 
       <div className={styles.grid}>
         <div className={styles.main}>
+          <ProviderSettings />
           <Panel>
             <PanelHeader
               title="Контекст диалога"
@@ -199,21 +200,7 @@ export function SettingsPage() {
             />
             <PanelBody>
               <div className={styles.stack}>
-                <Field
-                  label="Модель по умолчанию" hint="Для быстрых чатов и режимов без своей модели."
-                >
-                  <Select
-                    value={defaultModelId}
-                    options={models.map((model) => ({
-                      value: model.id,
-                      label: model.name,
-                      description: model.provider,
-                      meta: `${formatCompact(model.context_window)}`,
-                    }))}
-                    onChange={setDefaultModelId}
-                    ariaLabel="Модель по умолчанию"
-                  />
-                </Field>
+
 
                 <Switch
                   checked={streamResponses}

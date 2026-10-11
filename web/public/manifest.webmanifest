@@ -1,12 +1,12 @@
 {
-  "name": "WristMind — панель управления",
+  "name": "WristMind — чаты",
   "short_name": "WristMind",
-  "description": "Режимы, чаты, базы знаний и устройства WristMind.",
-  "start_url": "/main",
+  "description": "Ваш ИИ-помощник. Общая история разговоров на сайте и часах.",
+  "start_url": "/talk",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#07110f",
-  "theme_color": "#07110f",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
   "icons": [
     {
       "src": "/icon-192.png",
@@ -24,5 +24,6 @@
       "type": "image/png",
       "purpose": "maskable"
     }
-  ]
+  ],
+  "id": "/talk"
 }

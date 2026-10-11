@@ -135,11 +135,6 @@ export function useDevices(): Device[] {
   );
 }
 
-export function useDevice(id: string | undefined): Device | undefined {
-  const { devices } = useSnapshot();
-  return useMemo(() => devices.find((d) => d.id === id), [devices, id]);
-}
-
 export function usePairingCodes(): PairingCode[] {
   const { pairingCodes } = useSnapshot();
   return useMemo(
@@ -171,10 +166,6 @@ export function useServiceHealth(): ServiceHealth[] {
 /** Which path currently answers: the local backend or the reserved VPS one. */
 export function useApiPath(): ApiPath {
   return useSnapshot().health?.api_path ?? 'local';
-}
-
-export function useServerVersion(): string | null {
-  return useSnapshot().health?.version ?? null;
 }
 
 /**

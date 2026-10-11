@@ -2,10 +2,12 @@ import {
   describeError,
   WristMindError,
 } from '@/services/errors';
-import type {
-  BootstrapResult,
-  WristMindEvent,
-  WristMindService,
+import {
+  ACCOUNT_EVENT,
+  type AccountEvent,
+  type BootstrapResult,
+  type WristMindEvent,
+  type WristMindService,
 } from '@/services/types';
 import type { Session } from '@/session';
 import type {
@@ -63,9 +65,16 @@ export interface AppSnapshot {
   health: SystemHealth | null;
   /** Bumped on every mutation; convenient as an effect dependency. */
   revision: number;
+  /** Source index invalidation, independent of streamed message text. */
+  chatSourcesRevision: number;
 }
 
 const EMPTY_MESSAGES: Message[] = [];
+
+/** One refetch per slice per burst, however many events the burst contains. */
+const REFRESH_DEBOUNCE_MS = 150;
+/** Freshness cadence while the live stream is not connected. */
+const FALLBACK_POLL_MS = 5_000;
 
 export interface SendMessageRequest {
   chat_id: string;
@@ -93,6 +102,34 @@ export class WristMindClientStore {
   private bootstrapPromise: Promise<void> | null = null;
   private overviewRefreshPromise: Promise<void> | null = null;
 
+  /** Live account feed: unsubscribe handle and the last applied cursor. */
+  private unsubscribeEvents: (() => void) | null = null;
+  private eventCursor = 0;
+  private refreshTimer: number | null = null;
+  private pollTimer: number | null = null;
+  private visibilityHook: (() => void) | null = null;
+
+  /**
+   * Chats whose answer this tab is generating. A server snapshot must never
+   * overwrite a live optimistic turn, so these are excluded from refetches
+   * until the local stream has finished.
+   */
+  private readonly streamingChats = new Set<string>();
+  private readonly openedChats = new Set<string>();
+  private readonly messageLoads = new Map<string, Promise<void>>();
+
+  /** Slices awaiting a refetch; filled by events, drained by `flushRefresh`. */
+  private readonly dirty = {
+    chats: false,
+    modes: false,
+    sources: false,
+    devices: false,
+    pairing: false,
+    settings: false,
+    overview: false,
+    messages: new Set<string>(),
+  };
+
   /** Exposed so views can recognise the device this panel runs on. */
   readonly session: Session;
 
@@ -117,6 +154,7 @@ export class WristMindClientStore {
       stats: null,
       health: null,
       revision: 0,
+      chatSourcesRevision: 0,
     };
   }
 
@@ -174,6 +212,7 @@ export class WristMindClientStore {
       });
       this.unsubscribeService?.();
       this.unsubscribeService = this.service.subscribe(this.handleEvent);
+      this.connectEvents();
     } catch (error) {
       this.setStatus('error', describeError(error, 'Не удалось загрузить панель'));
     }
@@ -197,13 +236,28 @@ export class WristMindClientStore {
   }
 
   /** Reloads a single chat's messages, used when opening a dialog. */
-  async loadMessages(chatId: string): Promise<void> {
-    if (this.snapshot.messages[chatId]) return;
+  loadMessages(chatId: string): Promise<void> {
+    this.openedChats.add(chatId);
+    if (this.snapshot.messages[chatId] !== undefined) return Promise.resolve();
+    const pending = this.messageLoads.get(chatId);
+    if (pending) return pending;
+    const load = this.fetchMessages(chatId).finally(() => this.messageLoads.delete(chatId));
+    this.messageLoads.set(chatId, load);
+    return load;
+  }
+
+  private async fetchMessages(chatId: string): Promise<void> {
+    const before = this.snapshot.messages[chatId];
     try {
       const messages = await this.service.chats.messages(chatId);
-      this.commit({ messages: { ...this.snapshot.messages, [chatId]: messages } });
+      // A local turn or a newer fetch may have changed this history meanwhile.
+      if (this.streamingChats.has(chatId) || this.snapshot.messages[chatId] !== before) return;
+      if (!this.snapshot.chats.some(chat => chat.id === chatId)) return;
+      this.commit({ messages: { ...this.snapshot.messages, [chatId]: messages },
+        chatSourcesRevision: this.snapshot.chatSourcesRevision + 1 });
     } catch {
-      this.commit({ messages: { ...this.snapshot.messages, [chatId]: EMPTY_MESSAGES } });
+      // A failed load is not an empty history. Keep it retryable on reopen,
+      // account events, or return from offline/background mode.
     }
   }
 
@@ -332,6 +386,263 @@ export class WristMindClientStore {
     return next;
   }
 
+  /* -- live account feed --------------------------------------------------- */
+
+  /**
+   * Subscribes to the server's change stream.
+   *
+   * The stream carries identifiers, not entities: each event marks a slice
+   * dirty and the slice is refetched once per burst. That keeps a single source
+   * of truth — the API — and means a payload that was already superseded on the
+   * server cannot overwrite newer local state.
+   */
+  private connectEvents(): void {
+    this.disconnectEvents();
+    this.startVisibilityWatch();
+    if (!this.service.subscribeAccountEvents) {
+      // No stream in this implementation: polling is the only freshness path.
+      this.startPolling();
+      return;
+    }
+    this.unsubscribeEvents = this.service.subscribeAccountEvents(this.eventCursor, {
+      onEvent: (event) => {
+        this.eventCursor = Math.max(this.eventCursor, event.id);
+        this.handleAccountEvent(event);
+      },
+      onResync: () => {
+        // The cursor fell behind the retention window, so some changes were
+        // never delivered. Reload once from the tail instead of trusting a
+        // cache that is known to be incomplete.
+        this.eventCursor = 0;
+        void this.bootstrap(true);
+      },
+      onStatusChange: (connected) => {
+        if (connected) this.stopPolling();
+        else this.startPolling();
+      },
+    });
+  }
+
+  private disconnectEvents(): void {
+    this.unsubscribeEvents?.();
+    this.unsubscribeEvents = null;
+    this.stopPolling();
+  }
+
+  private startVisibilityWatch(): void {
+    if (this.visibilityHook) return;
+    this.visibilityHook = () => {
+      if (document.visibilityState === 'hidden') return;
+      // A background tab is throttled, so whatever it shows is stale by the
+      // time it is looked at again. Treat every return as a cache miss.
+      this.dirty.chats = true;
+      this.dirty.overview = true;
+      for (const chatId of this.openedChats) {
+        this.dirty.messages.add(chatId);
+      }
+      void this.flushRefresh();
+    };
+    document.addEventListener('visibilitychange', this.visibilityHook);
+    window.addEventListener('online', this.visibilityHook);
+  }
+
+  private handleAccountEvent(event: AccountEvent): void {
+    const chatId = typeof event.data.chat_id === 'string' ? event.data.chat_id : null;
+    switch (event.type) {
+      case ACCOUNT_EVENT.chatCreated:
+      case ACCOUNT_EVENT.chatUpdated:
+        this.dirty.chats = true;
+        this.dirty.overview = true;
+        if (chatId) this.dirty.messages.add(chatId);
+        break;
+      case ACCOUNT_EVENT.chatDeleted:
+        if (chatId) {
+          const messages = { ...this.snapshot.messages };
+          delete messages[chatId];
+          this.commit({
+            chats: this.snapshot.chats.filter((chat) => chat.id !== chatId),
+            messages,
+          });
+        }
+        this.dirty.chats = true;
+        this.dirty.overview = true;
+        break;
+      case ACCOUNT_EVENT.messageCreated:
+      case ACCOUNT_EVENT.messageUpdated:
+        if (chatId) this.dirty.messages.add(chatId);
+        // A new turn changes title and ordering of the chat it belongs to.
+        this.dirty.chats = true;
+        break;
+      case ACCOUNT_EVENT.modeUpdated:
+      case ACCOUNT_EVENT.modeRemoved:
+        this.dirty.modes = true;
+        this.dirty.sources = true;
+        this.dirty.chats = true;
+        this.dirty.overview = true;
+        break;
+      case ACCOUNT_EVENT.sourceUpdated:
+      case ACCOUNT_EVENT.sourceRemoved:
+        this.dirty.sources = true;
+        this.dirty.overview = true;
+        if (chatId) this.dirty.messages.add(chatId);
+        break;
+      case ACCOUNT_EVENT.deviceUpdated:
+      case ACCOUNT_EVENT.deviceRemoved:
+        this.dirty.devices = true;
+        this.dirty.overview = true;
+        break;
+      case ACCOUNT_EVENT.settingsUpdated:
+        this.dirty.settings = true;
+        this.dirty.modes = true;
+        break;
+      case ACCOUNT_EVENT.pairingUpdated:
+        this.dirty.pairing = true;
+        break;
+      default:
+        this.dirty.overview = true;
+    }
+    this.scheduleRefresh();
+  }
+
+  private scheduleRefresh(): void {
+    if (this.refreshTimer !== null) return;
+    this.refreshTimer = window.setTimeout(() => {
+      this.refreshTimer = null;
+      void this.flushRefresh();
+    }, REFRESH_DEBOUNCE_MS);
+  }
+
+  private async flushRefresh(): Promise<void> {
+    if (this.snapshot.status !== 'ready') return;
+    const pending = { ...this.dirty, messages: new Set(this.dirty.messages) };
+    this.dirty.chats = false;
+    this.dirty.modes = false;
+    this.dirty.sources = false;
+    this.dirty.devices = false;
+    this.dirty.pairing = false;
+    this.dirty.settings = false;
+    this.dirty.overview = false;
+    this.dirty.messages.clear();
+
+    const work: Promise<void>[] = [];
+    if (pending.chats) work.push(this.reloadChats());
+    if (pending.modes) work.push(this.reloadModes());
+    if (pending.sources) work.push(this.reloadSources());
+    if (pending.devices) work.push(this.reloadDevices());
+    if (pending.pairing) work.push(this.reloadPairing());
+    if (pending.settings) work.push(this.reloadSettings());
+    if (pending.overview) work.push(this.reloadOverview());
+    for (const chatId of pending.messages) work.push(this.reloadMessages(chatId));
+    await Promise.all(work);
+  }
+
+  /* -- polling fallback ---------------------------------------------------- */
+
+  private startPolling(): void {
+    if (this.pollTimer !== null) return;
+    this.pollTimer = window.setInterval(() => {
+      void this.pollFallback();
+    }, FALLBACK_POLL_MS);
+  }
+
+  private stopPolling(): void {
+    if (this.pollTimer === null) return;
+    window.clearInterval(this.pollTimer);
+    this.pollTimer = null;
+  }
+
+  /**
+   * Freshness without a stream: refetch the lists and every chat history this
+   * session has already opened. Chats this tab is streaming itself are skipped
+   * so the fallback cannot fight the local optimistic turn.
+   */
+  private async pollFallback(): Promise<void> {
+    if (this.snapshot.status !== 'ready') return;
+    this.dirty.chats = true;
+    for (const chatId of this.openedChats) {
+      if (!this.streamingChats.has(chatId)) this.dirty.messages.add(chatId);
+    }
+    await this.flushRefresh();
+  }
+
+  /* -- targeted refetches -------------------------------------------------- */
+
+  private async reloadChats(): Promise<void> {
+    try {
+      this.commit({ chats: await this.service.chats.list() });
+    } catch {
+      /* a failed refresh keeps the cached list */
+    }
+  }
+
+  private async reloadModes(): Promise<void> {
+    try {
+      this.commit({ modes: await this.service.modes.list() });
+    } catch {
+      /* keep the cached modes */
+    }
+  }
+
+  private async reloadSources(): Promise<void> {
+    try {
+      this.commit({ sources: await this.service.knowledge.list(),
+        chatSourcesRevision: this.snapshot.chatSourcesRevision + 1 });
+    } catch {
+      /* keep the cached sources */
+    }
+  }
+
+  private async reloadDevices(): Promise<void> {
+    try {
+      this.commit({ devices: await this.service.devices.list() });
+    } catch {
+      /* keep the cached devices */
+    }
+  }
+
+  private async reloadPairing(): Promise<void> {
+    try {
+      this.commit({ pairingCodes: await this.service.pairing.list() });
+    } catch {
+      /* keep the cached codes */
+    }
+  }
+
+  private async reloadSettings(): Promise<void> {
+    try {
+      const [settings, models] = await Promise.all([this.service.settings.get(), this.service.models.list()]);
+      this.commit({ settings, models });
+    } catch {
+      /* keep the cached settings */
+    }
+  }
+
+  private async reloadOverview(): Promise<void> {
+    try {
+      const stats = await this.service.stats.overview();
+      this.commit({ stats });
+    } catch {
+      /* stats are advisory */
+    }
+    try {
+      const health = await this.service.system.health();
+      this.commit({ health });
+    } catch {
+      /* health is advisory */
+    }
+  }
+
+  /**
+   * Refetches one chat's history. Skipped entirely for chats this tab is
+   * streaming, and for chats that were never opened in this session: an event
+   * announcing a chat is not a reason to download its history.
+   */
+  private async reloadMessages(chatId: string): Promise<void> {
+    if (this.streamingChats.has(chatId) || !this.openedChats.has(chatId)) return;
+    if (this.snapshot.messages[chatId] === undefined) { await this.loadMessages(chatId); return; }
+    await this.fetchMessages(chatId);
+  }
+
   /* -- message helpers ----------------------------------------------------- */
 
   private patchMessages(chatId: string, updater: (list: Message[]) => Message[]): void {
@@ -415,6 +726,10 @@ export class WristMindClientStore {
    */
   async sendMessage(request: SendMessageRequest): Promise<Message | null> {
     const { chat_id: chatId } = request;
+    if (this.streamingChats.has(chatId)) throw new WristMindError('В этом чате уже формируется ответ', { code: 'conflict' });
+    // While this tab owns the stream, server events for this chat must not
+    // replace the optimistic turn or its live text.
+    this.streamingChats.add(chatId);
     const chat = this.snapshot.chats.find((c) => c.id === chatId);
     const mode = this.snapshot.modes.find((m) => m.id === chat?.mode_id);
     const defaultModel = this.snapshot.settings?.default_model_id ?? null;
@@ -497,6 +812,7 @@ export class WristMindClientStore {
             );
             return [...withoutPlaceholder, message];
           });
+          this.commit({ chatSourcesRevision: this.snapshot.chatSourcesRevision + 1 });
         },
         onError: (messageId, message) =>
           this.patchMessage(chatId, clientAssistantId, (current) => ({
@@ -520,6 +836,14 @@ export class WristMindClientStore {
       }));
       if (!aborted) throw error;
       return null;
+    } finally {
+      this.streamingChats.delete(chatId);
+      // Events received during streaming were deliberately skipped. Reconcile
+      // once afterwards so optimistic ids and the real server turn converge.
+      this.openedChats.add(chatId);
+      this.dirty.messages.add(chatId);
+      this.dirty.chats = true;
+      this.scheduleRefresh();
     }
   }
 
@@ -613,6 +937,16 @@ export class WristMindClientStore {
   dispose(): void {
     this.unsubscribeService?.();
     this.unsubscribeService = null;
+    this.disconnectEvents();
+    if (this.refreshTimer !== null) {
+      window.clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+    if (this.visibilityHook) {
+      document.removeEventListener('visibilitychange', this.visibilityHook);
+      window.removeEventListener('online', this.visibilityHook);
+      this.visibilityHook = null;
+    }
     this.listeners.clear();
   }
 }

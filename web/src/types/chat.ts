@@ -193,6 +193,8 @@ export interface MessageWebSearch {
   searches?: number;
   opened_pages?: number;
   queries?: string[];
+  saved?: boolean;
+  saved_source_id?: string | null;
   [key: string]: unknown;
 }
 
@@ -337,6 +339,9 @@ export interface ChatReferencedSource {
   retrieved_at: IsoDateTime | null;
   /** The assistant message the reference belongs to, when known. */
   message_id: string | null;
+  /** Present only when the server has actually extracted page text. */
+  read_at?: IsoDateTime | null;
+  character_count?: number;
 }
 
 /**
@@ -357,7 +362,7 @@ export interface ChatCreateInput {
 
 export interface ChatUpdateInput {
   title?: string;
-  /** Console-side flag: pinned chats sort to the top of the list. */
+  /** Persisted chat preference, shared by both web surfaces. */
   pinned?: boolean;
 }
 

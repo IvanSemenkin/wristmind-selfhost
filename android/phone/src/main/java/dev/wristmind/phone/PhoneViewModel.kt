@@ -20,7 +20,7 @@ data class PhoneState(
     val paused: Boolean = false,
     val serverReachable: Boolean? = null,
     val watchReachable: Boolean = false,
-    val watchName: String = "Xiaomi Watch 2",
+    val watchName: String = "Часы Wear OS",
     val status: CompanionStatus = CompanionStatus.SIGN_IN,
     val statusText: String = "Введите код с сайта WristMind",
     val busy: Boolean = false,
@@ -79,14 +79,15 @@ class PhoneViewModel(application: Application) : AndroidViewModel(application) {
         }
         launchAction {
             val current = mutableState.value
-            val result = WristMindApi(current.serverUrl).enrollWatch("Xiaomi Watch 2", code)
+            val url = dev.wristmind.phone.install.InstallValidation.server(current.serverUrl)
+            val result = WristMindApi(url).enrollWatch("Часы WristMind", code)
             token = result.token
-            store.save(DeviceConfig(current.serverUrl, token))
+            store.save(DeviceConfig(url, token))
             prefs.edit().putBoolean(KEY_PAUSED, false).apply()
             mutableState.update {
-                it.copy(enrolled = true, paused = false, pairingCode = "", statusText = "Часы подключены")
+                it.copy(enrolled = true, paused = false, pairingCode = "", statusText = "Сервер подключён. Теперь установите приложение на часы")
             }
-            watchLink.publishConfig(current.serverUrl, token, paused = false)
+            // Configuration is sent to the selected watch only after installation.
             refreshInternal()
         }
     }

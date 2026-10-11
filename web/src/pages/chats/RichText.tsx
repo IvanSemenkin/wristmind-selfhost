@@ -1,9 +1,8 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import 'katex/dist/katex.min.css';
 
 import {
-  parseRichText,
   renderMathHtml,
   type BlockNode,
   type InlineNode,
@@ -11,6 +10,11 @@ import {
 } from '@/lib/richText';
 import { extractLegacySources } from '@/lib/webSources';
 
+import { answerBlockKind, createStreamingRichTextParser } from '@/lib/streamingRichText';
+import { extractLooseChart, parseAnswerChart } from '@/lib/answerChart';
+import { AnswerChart } from './AnswerChart';
+import { Callout } from './Callout';
+import { useSmoothAnswer } from './useSmoothAnswer';
 import styles from './RichText.module.css';
 
 /* =============================================================================
@@ -32,40 +36,58 @@ import styles from './RichText.module.css';
 
 const HEADING_STYLE = [styles.heading1, styles.heading2, styles.heading3, styles.heading4];
 
-export function RichText({ content, className }: { content: string; className?: string }) {
-  const blocks = useMemo(() => parseRichText(extractLegacySources(content ?? '').content), [content]);
+export function RichText({ content, className, streaming = false }: { content: string; className?: string; streaming?: boolean }) {
+  const displayed = useSmoothAnswer(content, streaming);
+  const parser = useRef(createStreamingRichTextParser());
+  const blocks = useMemo(() => {
+    const source = extractLegacySources(displayed ?? '').content;
+    const loose = extractLooseChart(source);
+    return loose ? [{ type: 'code', lang: 'chart', value: loose.value } as BlockNode, ...parser.current(loose.tail)] : parser.current(source);
+  }, [displayed]);
 
   if (!blocks.length) return null;
   return (
     <div className={className}>
       {blocks.map((block, index) => (
-        <Block key={index} node={block} />
+        <StableBlock key={index} node={block} streaming={streaming} />
       ))}
     </div>
   );
 }
 
-function Block({ node }: { node: BlockNode }) {
+const StableBlock = memo(Block);
+
+function Block({ node, streaming = false }: { node: BlockNode; streaming?: boolean }) {
   switch (node.type) {
     case 'heading': {
       const level = Math.min(node.depth, 4);
       const Tag = (['h1', 'h2', 'h3', 'h4'] as const)[level - 1];
       return <Tag className={HEADING_STYLE[level - 1]}>{inline(node.children)}</Tag>;
     }
-    case 'paragraph':
-      return <div className={styles.paragraph}>{inline(node.children)}</div>;
+    case 'paragraph': {
+      const kind = answerBlockKind(node);
+      return <div className={kind ? `${styles.paragraph} ${styles.answerBlock}` : styles.paragraph} data-kind={kind}>{inline(node.children)}</div>;
+    }
     case 'list':
-      return <ListNode node={node} />;
+      return <ListNode node={node} streaming={streaming} />;
     case 'blockquote':
       return (
         <blockquote className={styles.blockquote}>
           {node.children.map((child, index) => (
-            <Block key={index} node={child} />
+            <StableBlock key={index} node={child} streaming={streaming} />
           ))}
         </blockquote>
       );
-    case 'code':
+    case 'callout':
+      return <Callout kind={node.kind} title={node.title.length ? inline(node.title) : undefined} streaming={streaming}>
+        {node.children.map((child, index) => <StableBlock key={index} node={child} streaming={streaming} />)}
+      </Callout>;
+    case 'code': {
+      const isChart = node.lang === 'chart' || ((node.lang === 'json' || !node.lang) && extractLooseChart(node.value) !== null);
+      const chart = isChart ? parseAnswerChart(node.value) : null;
+      if (isChart) return chart ? <AnswerChart chart={chart} /> : <div className={styles.chartStatus} role="status">{streaming ? 'График формируется…' : 'Не удалось построить график: некорректные данные или неподдерживаемое выражение.'}</div>;
       return <CodeBlock lang={node.lang} value={node.value} />;
+    }
     case 'table':
       return <TableView node={node} />;
     case 'divider':
@@ -75,7 +97,7 @@ function Block({ node }: { node: BlockNode }) {
   }
 }
 
-function ListNode({ node }: { node: Extract<BlockNode, { type: 'list' }> }) {
+function ListNode({ node, streaming }: { node: Extract<BlockNode, { type: 'list' }>; streaming: boolean }) {
   const items = node.items.map((item, index) => (
     <li key={index} className={item.checked === null ? styles.listItem : styles.taskItem}>
       {item.checked !== null && (
@@ -90,7 +112,7 @@ function ListNode({ node }: { node: Extract<BlockNode, { type: 'list' }> }) {
       )}
       <div className={styles.listItemBody}>
         {item.children.map((child, childIndex) => (
-          <Block key={childIndex} node={child} />
+          <StableBlock key={childIndex} node={child} streaming={streaming} />
         ))}
       </div>
     </li>
@@ -180,9 +202,20 @@ function MathView({ tex, display }: { tex: string; display: boolean }) {
   if (!html) {
     return <code className={styles.mathFallback}>{display ? `$$${tex}$$` : `$${tex}$`}</code>;
   }
+  if (display) {
+    return (
+      <div className={styles.mathBlock} tabIndex={0}>
+        <div
+          className={styles.mathTrack}
+          // Only KaTeX-generated markup reaches this branch (trust: false).
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      </div>
+    );
+  }
   return (
     <span
-      className={display ? styles.mathBlock : styles.mathInline}
+      className={styles.mathInline}
       // Only KaTeX-generated markup reaches this branch (trust: false).
       dangerouslySetInnerHTML={{ __html: html }}
     />

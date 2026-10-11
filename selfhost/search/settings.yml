@@ -1,0 +1,14 @@
+use_default_settings: true
+general:
+  instance_name: WristMind Search
+  enable_metrics: false
+search:
+  safe_search: 1
+  formats: [html, json]
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+  # Overridden by SEARXNG_SECRET; profile activation needs its own random secret.
+  secret_key: ""
+  limiter: false
+  public_instance: false

@@ -26,6 +26,7 @@ PROMPT_LABELS = {
     "knowledge_context": "Материалы базы знаний в ответе",
     "source_status": "Статус источников чата",
     "chat_memory_context": "Память чата в ответе",
+    "conversation_focus": "Контекст текущего вопроса",
     "search_summary": "Сводка веб-исследования",
 }
 

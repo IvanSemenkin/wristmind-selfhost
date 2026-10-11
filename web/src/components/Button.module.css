@@ -108,7 +108,6 @@
   background-color: var(--accent);
   color: var(--accent-contrast);
   border-color: transparent;
-  box-shadow: var(--shadow-xs);
 }
 
 .button[data-variant='primary']:hover:not(:disabled) {
@@ -121,16 +120,16 @@
 
 /* ---- Secondary ------------------------------------------------------------ */
 
+/* A filled chip, never an outlined box: ChatGPT separates an action from the
+   surface with tone, and only primary actions carry a contrasting fill. */
 .button[data-variant='secondary'] {
   background-color: var(--bg-surface);
   color: var(--text-primary);
-  border-color: var(--border-default);
-  box-shadow: var(--shadow-xs);
+  border-color: transparent;
 }
 
 .button[data-variant='secondary']:hover:not(:disabled) {
-  background-color: var(--bg-hover);
-  border-color: var(--border-strong);
+  background-color: var(--bg-surface-raised);
 }
 
 .button[data-variant='secondary']:active:not(:disabled) {
@@ -154,12 +153,12 @@
 }
 
 .button[data-variant='ghost'][data-outlined] {
-  border-color: var(--border-default);
+  background-color: var(--bg-surface);
   color: var(--text-secondary);
 }
 
 .button[data-variant='ghost'][data-outlined]:hover:not(:disabled) {
-  border-color: var(--border-strong);
+  background-color: var(--bg-surface-raised);
   color: var(--text-primary);
 }
 
@@ -181,7 +180,6 @@
   background-color: var(--danger);
   color: #fff;
   border-color: transparent;
-  box-shadow: var(--shadow-xs);
 }
 
 .button[data-variant='danger']:hover:not(:disabled) {

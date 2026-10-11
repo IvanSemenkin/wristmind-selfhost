@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<network-security-config>
-    <!-- Только для локального MVP. На VPS должен использоваться HTTPS. -->
-    <base-config cleartextTrafficPermitted="true" />
-</network-security-config>
-

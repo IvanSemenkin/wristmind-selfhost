@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
 import { SessionContext, type Session, type SessionState } from '@/session';
-import { createApiService, WristMindProvider } from '@/services';
-import { ConfirmProvider, ToastProvider } from '@/components';
+import { createApiService, enrollWebSession, WristMindProvider } from '@/services';
+import { ConfirmProvider, ToastProvider, Button, Field, Input, Panel, PanelBody } from '@/components';
 import { ThemeProvider } from './ThemeProvider';
 import { AppShell } from './AppShell';
 import { BootError, BootScreen, NotFoundPage } from './Chrome';
-import { FirstRunWizard } from './FirstRunWizard';
 import { RouterProvider } from './router';
 import { ROUTES } from './routes';
 import { useStoreStatus } from '@/store';
+import { SelfHostAccess, SetupWizard } from '@/pages/setup/SetupScreen';
+import { setupRequest, type SetupStatus } from '@/pages/setup/setupApi';
 
 /* =============================================================================
    Application root.
@@ -23,20 +24,47 @@ const SESSION_KEY = 'wristmind.web.session';
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const [selfhost, setSelfhost] = useState<SetupStatus | null>(null);
+  const [bootError, setBootError] = useState<string | null>(null);
+  const [wizard, setWizard] = useState(false);
 
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(SESSION_KEY);
-      if (raw) setSession(JSON.parse(raw) as Session);
-    } catch {
-      window.localStorage.removeItem(SESSION_KEY);
-    } finally {
-      setHydrated(true);
-    }
+    let active = true;
+    const hydrate = async () => {
+      try {
+        const response = await fetch('/v1/selfhost/status', { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
+        if (response.status === 404) {
+          try {
+            const raw = window.localStorage.getItem(SESSION_KEY);
+            if (raw && active) setSession(JSON.parse(raw) as Session);
+          } catch { window.localStorage.removeItem(SESSION_KEY); }
+        } else {
+          if (!response.ok) throw new Error('Не удалось загрузить состояние сервера.');
+          const status = await response.json() as SetupStatus;
+          if (!active) return;
+          setSelfhost(status); setWizard(!status.completed || window.location.pathname === '/setup');
+          window.localStorage.removeItem(SESSION_KEY);
+          const restored = await fetch('/v1/selfhost/session', { cache: 'no-store', credentials: 'same-origin', signal: AbortSignal.timeout(15_000) });
+          if (restored.ok && active) setSession(await restored.json() as Session);
+          else if (restored.status !== 401 && !restored.ok) throw new Error('Не удалось восстановить вход. Повторите.');
+        }
+      } catch (cause) {
+        if (active) setBootError(cause instanceof Error ? cause.message : 'Не удалось связаться с сервером.');
+      } finally { if (active) setHydrated(true); }
+    };
+    void hydrate();
+    return () => { active = false; };
   }, []);
 
+  if (bootError) return <BootError message={bootError} onRetry={() => window.location.reload()} />;
   if (!hydrated) return <BootScreen />;
-  if (!session) return <FirstRunWizard onEnrolled={(next) => {
+  if (!session && selfhost) return <ThemeProvider><SelfHostAccess status={selfhost} onSession={(next) => {
+    void setupRequest<SetupStatus>('status').then(status => { setSelfhost(status); setWizard(!status.completed || window.location.pathname === '/setup'); setSession(next); }).catch(() => window.location.reload());
+  }} /></ThemeProvider>;
+  if (session && selfhost && wizard) return <ThemeProvider><SetupWizard onComplete={() => {
+    window.location.assign('/talk');
+  }} /></ThemeProvider>;
+  if (!session) return <EnrollmentScreen onEnrolled={(next) => {
     window.localStorage.setItem(SESSION_KEY, JSON.stringify(next));
     setSession(next);
   }} />;
@@ -63,6 +91,50 @@ export function App() {
         </ConfirmProvider>
       </ToastProvider>
     </ThemeProvider>
+  );
+}
+
+function EnrollmentScreen({ onEnrolled }: { onEnrolled: (session: Session) => void }) {
+  const [baseUrl, setBaseUrl] = useState(() => window.location.origin);
+  const [method, setMethod] = useState<'code' | 'secret'>('code');
+  const [credential, setCredential] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    setBusy(true); setError(null);
+    try {
+      const session = await enrollWebSession(baseUrl, method, credential.trim());
+      onEnrolled(session);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Не удалось подключить панель');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main style={{ minHeight: '100dvh', display: 'grid', placeItems: 'center', padding: 24 }}>
+      <div style={{ width: 'min(100%, 440px)' }}><Panel><PanelBody>
+        <div style={{ display: 'grid', gap: 12, marginBottom: 24 }}>
+          <h1 style={{ margin: 0 }}>Подключить WristMind</h1>
+          <p style={{ margin: 0, color: 'var(--text-secondary)' }}>Введите адрес API и одноразовый код из уже подключённой панели.</p>
+        </div>
+        <form onSubmit={(event) => { event.preventDefault(); void submit(); }} style={{ display: 'grid', gap: 16 }}>
+          <Field label="Адрес API" htmlFor="api-url">
+            <Input id="api-url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} mono />
+          </Field>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            <Button type="button" variant={method === 'code' ? 'primary' : 'secondary'} onClick={() => setMethod('code')}>Код доступа</Button>
+            <Button type="button" variant={method === 'secret' ? 'primary' : 'secondary'} onClick={() => setMethod('secret')}>Bootstrap secret</Button>
+          </div>
+          <Field label={method === 'code' ? 'Одноразовый код' : 'Bootstrap secret'} htmlFor="credential" error={error ?? undefined}>
+            <Input id="credential" type={method === 'secret' ? 'password' : 'text'} value={credential} onChange={(event) => setCredential(event.target.value)} mono autoComplete="off" />
+          </Field>
+          <Button type="submit" variant="primary" loading={busy} disabled={!baseUrl.trim() || !credential.trim()} block>Подключить панель</Button>
+        </form>
+      </PanelBody></Panel></div>
+    </main>
   );
 }
 

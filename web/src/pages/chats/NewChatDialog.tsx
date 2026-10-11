@@ -1,3 +1,4 @@
+import { useChatBase } from './useChatBase';
 import { useEffect, useMemo, useState } from 'react';
 import { BookOpen, MessagesSquare, Zap } from 'lucide-react';
 import { useActions } from '@/services';
@@ -19,6 +20,7 @@ export interface NewChatDialogProps {
 const QUICK = '__quick__';
 
 export function NewChatDialog({ open, onClose, initialModeId, onCreated }: NewChatDialogProps) {
+  const base = useChatBase();
   const modes = useModes();
   const sources = useSources();
   const models = useModels();
@@ -56,7 +58,7 @@ export function NewChatDialog({ open, onClose, initialModeId, onCreated }: NewCh
       toast.success('Чат создан', selection === QUICK ? 'Быстрый чат без базы знаний' : undefined);
       onCreated?.(chat.id);
       onClose();
-      navigate(`/chats/${chat.id}`);
+      navigate(`${base}/${chat.id}`);
     } catch {
       toast.error('Не удалось создать чат');
     } finally {

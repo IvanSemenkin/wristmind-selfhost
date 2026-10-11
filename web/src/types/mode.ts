@@ -39,6 +39,8 @@ export interface Mode {
   color: ModeColor;
   /** Emoji or icon name shown instead of the colour dot, when provided. */
   icon: string | null;
+  /** Telegram premium emoji id; opaque to the console. */
+  telegram_emoji_id: string | null;
   system_prompt: string;
   /** Model used for answers in this mode. */
   response_model_id: string;
@@ -54,6 +56,7 @@ export interface ModeCreateInput {
   description: string;
   color: ModeColor;
   icon?: string | null;
+  telegram_emoji_id?: string | null;
   system_prompt: string;
   response_model_id: string;
   hidden_on_watch: boolean;

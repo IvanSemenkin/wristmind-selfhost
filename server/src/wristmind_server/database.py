@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool
 
 from .config import get_settings
 from .source_prompts import DEFAULT_SOURCE_CANDIDATE_PROMPT, DEFAULT_SOURCE_INTENT_PROMPT
@@ -24,7 +25,21 @@ class Base(DeclarativeBase):
 
 
 settings = get_settings()
-engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+# SQLite is the test/local engine only, and it is driven from several event
+# loops (the test suite calls `asyncio.run` per case). A pooled aiosqlite
+# connection stays bound to the loop that created it, so reusing one from
+# another loop both leaks state and produces `database is locked` failures
+# between concurrent writers. A pool-less engine with a real busy timeout
+# removes that whole class of failure. PostgreSQL keeps the normal pool.
+if settings.database_url.startswith("sqlite"):
+    engine = create_async_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        poolclass=NullPool,
+        connect_args={"timeout": 30},
+    )
+else:
+    engine = create_async_engine(settings.database_url, pool_pre_ping=True)
 SessionFactory = async_sessionmaker(engine, expire_on_commit=False)
 
 
@@ -39,6 +54,10 @@ async def init_database() -> None:
     settings.storage_dir.mkdir(parents=True, exist_ok=True)
     async with engine.begin() as connection:
         if connection.dialect.name == "postgresql":
+            # Fresh installs have no tables to ALTER. Create the extension first
+            # (Vector columns require it), then create absent tables, then migrate.
+            await connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            await connection.run_sync(Base.metadata.create_all)
             await connection.execute(text("ALTER TABLE devices ADD COLUMN IF NOT EXISTS user_id VARCHAR(36)"))
             await connection.execute(text("ALTER TABLE devices ADD COLUMN IF NOT EXISTS removed_at TIMESTAMP WITH TIME ZONE"))
             await connection.execute(text("ALTER TABLE devices ADD COLUMN IF NOT EXISTS enrolled_ip VARCHAR(45)"))
@@ -73,6 +92,8 @@ async def init_database() -> None:
             await connection.execute(
                 text("ALTER TABLE modes ADD COLUMN IF NOT EXISTS hidden_on_watch BOOLEAN NOT NULL DEFAULT FALSE")
             )
+            await connection.execute(text("ALTER TABLE modes ADD COLUMN IF NOT EXISTS telegram_emoji_id VARCHAR(80)"))
+            await connection.execute(text("ALTER TABLE telegram_accounts ADD COLUMN IF NOT EXISTS emoji_target VARCHAR(120)"))
             await connection.execute(
                 text("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS history_message_limit INTEGER NOT NULL DEFAULT 12")
             )
@@ -84,12 +105,6 @@ async def init_database() -> None:
             )
             await connection.execute(
                 text("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS retention_days INTEGER NOT NULL DEFAULT 90")
-            )
-            await connection.execute(
-                text(
-                    "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS first_run_completed "
-                    "BOOLEAN NOT NULL DEFAULT FALSE"
-                )
             )
             await connection.execute(
                 text("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS developer_mode BOOLEAN NOT NULL DEFAULT FALSE")
@@ -117,6 +132,7 @@ async def init_database() -> None:
             await connection.execute(
                 text("ALTER TABLE chats ADD COLUMN IF NOT EXISTS title_generation_state VARCHAR(20) NOT NULL DEFAULT 'idle'")
             )
+            await connection.execute(text("ALTER TABLE chats ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE"))
             await connection.execute(text("ALTER TABLE chats ADD COLUMN IF NOT EXISTS memory_summary TEXT NOT NULL DEFAULT ''"))
             await connection.execute(text("ALTER TABLE chats ADD COLUMN IF NOT EXISTS memory_turn_count INTEGER NOT NULL DEFAULT 0"))
             await connection.execute(
@@ -184,6 +200,11 @@ async def init_database() -> None:
                 await connection.execute(
                     text("ALTER TABLE modes ADD COLUMN hidden_on_watch BOOLEAN NOT NULL DEFAULT 0")
                 )
+            if not any(column["name"] == "telegram_emoji_id" for column in columns):
+                await connection.execute(text("ALTER TABLE modes ADD COLUMN telegram_emoji_id TEXT"))
+            telegram_columns = (await connection.execute(text("PRAGMA table_info(telegram_accounts)"))).mappings().all()
+            if telegram_columns and not any(column["name"] == "emoji_target" for column in telegram_columns):
+                await connection.execute(text("ALTER TABLE telegram_accounts ADD COLUMN emoji_target TEXT"))
             settings_columns = (await connection.execute(text("PRAGMA table_info(app_settings)"))).mappings().all()
             if not any(column["name"] == "history_message_limit" for column in settings_columns):
                 await connection.execute(
@@ -222,6 +243,8 @@ async def init_database() -> None:
                 await connection.execute(
                     text("ALTER TABLE chats ADD COLUMN title_generation_state TEXT NOT NULL DEFAULT 'idle'")
                 )
+            if not any(column["name"] == "pinned" for column in chat_columns):
+                await connection.execute(text("ALTER TABLE chats ADD COLUMN pinned BOOLEAN NOT NULL DEFAULT FALSE"))
             if not any(column["name"] == "memory_summary" for column in chat_columns):
                 await connection.execute(text("ALTER TABLE chats ADD COLUMN memory_summary TEXT NOT NULL DEFAULT ''"))
             if not any(column["name"] == "memory_turn_count" for column in chat_columns):

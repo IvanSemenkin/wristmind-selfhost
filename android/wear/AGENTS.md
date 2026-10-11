@@ -17,7 +17,7 @@ Use the installed `wear-compose-m3` skill for any Wear Compose Material 3 change
 - Pair with a one-time numeric code. The encrypted device token is persisted through `DeviceConfigStore`; the active chat, per-chat drafts, pending request ID/job/cursor are persisted through `WearLocalStore`.
 - Startup restores the saved chat if it still exists, otherwise the latest API chat.
 - Transport is `FailoverWearGateway`: direct HTTPS first; only I/O/network transport failures fall back to a reachable phone through Wearable Data Layer. HTTP status errors do not trigger fallback.
-- Voice input is watch `SpeechRecognizer` partial/final text into the editable draft. It never sends automatically.
+- Voice input is in-app SpeechKit dictation: mono PCM is uploaded during recording through direct HTTPS, with Wearable Data Layer proxy fallback. Confirmation appends normalized text to the editable draft; it never sends automatically. System recognizer code remains legacy/inactive.
 - The compact chat composer opens a full-screen draft preview. Keyboard `Done` returns to that preview; only the upper check returns to chat, and only chat Send submits.
 - Draft/editor navigation must preserve the hoisted chat list state. Only genuinely new messages/pending question/first stream token may auto-scroll.
 - Assistant bubbles show at most three lines. Only actual visual overflow makes a persisted assistant answer tappable; full answer uses a scrollable Markdown screen.
@@ -36,3 +36,7 @@ $env:JAVA_HOME = '<path to JDK 21>'
 ```
 
 Use the round `WristMind_Wear_466` emulator for layout smoke testing. Keep `:phone` and `:wear` signed/package-compatible for Data Layer, but do not change application IDs or signing strategy casually.
+
+## SelfHost copy override
+
+This checkout uses a neutral HTTPS placeholder until the companion configures the user's server. Firebase is optional. Stage 7 adds a point-to-point installation configuration acknowledgement; the existing config/proxy/direct-first behavior stays intact. See ../../docs/COMPANION_SETUP.md. Never copy production credentials into this build.

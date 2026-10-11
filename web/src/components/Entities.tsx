@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react';
 import { Link } from '@/app/router';
 import { Cloud, Cpu, Monitor, Server, Smartphone, Watch } from 'lucide-react';
 import type {
@@ -11,7 +10,7 @@ import type {
 } from '@/types';
 import { DEVICE_KIND_LABELS, MODEL_CAPABILITY_LABELS } from '@/types';
 import { cn } from '@/lib/cn';
-import { Badge, StatusDot } from '@/components';
+import { Badge } from '@/components';
 import type { Tone } from '@/components';
 import styles from './Entities.module.css';
 
@@ -108,17 +107,6 @@ export function ModelIcon({ model, className }: { model?: Model; className?: str
   );
 }
 
-export function ModelLabel({ model, compact = false }: { model?: Model; compact?: boolean }) {
-  if (!model) return <span className={styles.muted}>Модель не выбрана</span>;
-  return (
-    <span className={styles.modelLabel}>
-      <ModelIcon model={model} />
-      <span className={styles.modelName}>{model.name}</span>
-      {!compact && <span className={styles.modelProvider}>{model.provider}</span>}
-    </span>
-  );
-}
-
 /* -------------------------------------------------------------------------- */
 /* Knowledge sources                                                          */
 /* -------------------------------------------------------------------------- */
@@ -144,7 +132,7 @@ export function SourceStatusBadge({ status }: { status: JobStatus }) {
 /* -------------------------------------------------------------------------- */
 
 export function DeviceIcon({ kind, className }: { kind: DeviceKind; className?: string }) {
-  const Icon = kind === 'PHONE' ? Smartphone : kind === 'WATCH' ? Watch : Monitor;
+  const Icon = kind === 'PHONE' ? Smartphone : kind === 'WATCH' ? Watch : kind === 'TELEGRAM' ? Server : Monitor;
   return (
     <span className={cn(styles.deviceIcon, className)} data-type={kind.toLowerCase()}>
       <Icon />
@@ -183,35 +171,4 @@ export function ServiceStatusBadge({ status }: { status: ServiceStatus }) {
       {meta.label}
     </Badge>
   );
-}
-
-export function ServiceIcon({ id }: { id: string }) {
-  const Icon = id === 'phone' ? Smartphone : id === 'watch' ? Watch : Server;
-  return (
-    <span className={styles.serviceIcon}>
-      <Icon />
-    </span>
-  );
-}
-
-export function HealthDot({ status, pulse = false }: { status: ServiceStatus; pulse?: boolean }) {
-  const tone: Tone =
-    status === 'operational' ? 'success' : status === 'degraded' ? 'warning' : 'danger';
-  return <StatusDot tone={tone} pulse={pulse} />;
-}
-
-/* -------------------------------------------------------------------------- */
-/* Misc                                                                       */
-/* -------------------------------------------------------------------------- */
-
-export function MetaRow({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cn(styles.metaRow, className)}>{children}</div>;
-}
-
-export function MetaItem({ children }: { children: ReactNode }) {
-  return <span className={styles.metaItem}>{children}</span>;
-}
-
-export function Sep() {
-  return <span className={styles.sep} aria-hidden />;
 }

@@ -226,25 +226,6 @@
   background: var(--bg-hover);
 }
 
-/* ---- Route transition ----------------------------------------------------- */
-
-.routeTransition {
-  animation: routeIn var(--duration-base) var(--ease-out);
-}
-
-@keyframes routeIn {
-  from {
-    opacity: 0;
-    transform: translateY(3px);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .routeTransition {
-    animation: none;
-  }
-}
-
 @media (max-width: 860px) {
   .bootSidebar {
     display: none;

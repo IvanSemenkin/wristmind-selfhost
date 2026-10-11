@@ -22,14 +22,25 @@ watch/app-side/private-config.js
 *.db
 tmp/
 
-# Per-deployment output: rendered HTTPS config, .env backups, mounted secrets.
-server/tls/
-server/secrets/
-server/.env.backup.*
-
 # Local IDE/build output and private attachments; never publish these with the source.
 .codex-remote-attachments/
 android/.kotlin/
 **/*.tsbuildinfo
 /data/
 /dist/
+
+# Private installation access configuration
+.tunnel-token
+.access-*
+
+# Maintenance state is private and never part of public artifacts
+.wristmind-operation
+.wristmind-last-update
+.backup-*
+outputs/
+
+# Private Android release signing material
+*.jks
+*.keystore
+*.p12
+*.pfx

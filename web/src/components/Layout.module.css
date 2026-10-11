@@ -110,8 +110,9 @@
 /* ---- Panel ---------------------------------------------------------------- */
 
 .panel {
+  /* Depth by tone, not by outline: the panel is one step lighter than the
+     canvas. A border around every container is the look this redesign removes. */
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
   border-radius: var(--radius-xl);
   overflow: hidden;
   min-width: 0;
@@ -122,13 +123,11 @@
 }
 
 .panel[data-interactive] {
-  transition:
-    border-color var(--duration-fast) var(--ease-out),
-    background-color var(--duration-fast) var(--ease-out);
+  transition: background-color var(--duration-fast) var(--ease-out);
 }
 
 .panel[data-interactive]:hover {
-  border-color: var(--border-strong);
+  background: var(--bg-surface-raised);
 }
 
 .panelHeader {
@@ -213,7 +212,8 @@
   position: sticky;
   top: 0;
   z-index: var(--z-sticky);
-  background: var(--bg-canvas);
+  /* Matches the page frame it scrolls over, not the chat canvas. */
+  background: var(--bg-shell);
   padding-block: var(--space-5);
   margin-block: calc(var(--space-5) * -1);
 }

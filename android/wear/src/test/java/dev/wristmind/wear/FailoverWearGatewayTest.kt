@@ -18,8 +18,43 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.json.JSONObject
 
+@org.junit.runner.RunWith(org.robolectric.RobolectricTestRunner::class)
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class FailoverWearGatewayTest {
+    @Test
+    fun dictationSurvivesFifteenSecondRadioWakeWithoutProxy() = runTest {
+        val direct = FakeGateway().apply { speechDelayMs = 15_000 }
+        val proxy = FakeProxyGateway()
+        val gateway = FailoverWearGateway(direct, proxy, sendLogger = {})
+        gateway.speechStream(JSONObject().put("session_id", "voice").put("action", "start"))
+        assertEquals(1, direct.speechBodies.size)
+        assertEquals(0, proxy.speechBodies.size)
+        assertEquals(0, proxy.isReachableCalls)
+    }
+
+    @Test
+    fun lostAudioPacketResponseRetriesExactlyTheSamePacketDirectly() = runTest {
+        val direct = FakeGateway().apply { speechFailures = 1 }
+        val proxy = FakeProxyGateway().apply { reachable = false }
+        val gateway = FailoverWearGateway(direct, proxy, sendLogger = {})
+        val packet = JSONObject().put("session_id", "voice").put("action", "chunk").put("seq", 7).put("data", "same-packet")
+        gateway.speechStream(packet)
+        assertEquals(listOf(packet.toString(), packet.toString()), direct.speechBodies)
+        assertEquals(0, proxy.speechBodies.size)
+        assertEquals(0, proxy.isReachableCalls)
+    }
+
+    @Test
+    fun dictationHttpFailureDoesNotReplayOrUseProxy() = runTest {
+        val direct = FakeGateway().apply { speechError = WristMindApiException(422, "audio") }
+        val proxy = FakeProxyGateway()
+        val gateway = FailoverWearGateway(direct, proxy, sendLogger = {})
+        assertTrue(runCatching { gateway.speechStream(JSONObject().put("session_id", "voice").put("action", "chunk")) }.isFailure)
+        assertEquals(1, direct.speechBodies.size)
+        assertEquals(0, proxy.speechBodies.size)
+    }
     @Test
     fun transportFailureFallsBackOnceAndKeepsRequestId() = runTest {
         val direct = FakeGateway(sendError = IOException("TLS"))
@@ -34,12 +69,49 @@ class FailoverWearGatewayTest {
 
         gateway.sendMessage("chat", "stable-request", "text", true, true, true)
 
-        assertEquals(1, direct.sendCalls)
+        assertEquals(2, direct.sendCalls)
         assertEquals(1, proxy.sendCalls)
         assertEquals("stable-request", proxy.lastRequestId)
         assertTrue(proxy.lastWebSearch == true)
         assertTrue(proxy.lastResearchMode == true)
         assertEquals(true to true, routes.last())
+    }
+
+    @Test
+    fun lostPostResponseRecoversDirectWithSameRequestIdBeforePhoneProbe() = runTest {
+        val direct = FakeGateway(sendError = IOException("lost response"), sendFailures = 1)
+        val proxy = FakeProxyGateway()
+        val gateway = FailoverWearGateway(direct, proxy, sendLogger = {})
+
+        assertEquals("job", gateway.sendMessage("chat", "stable-request", "text", true, true, true).id)
+        assertEquals(2, direct.sendCalls)
+        assertEquals("stable-request", direct.lastRequestId)
+        assertTrue(direct.lastResearchMode == true)
+        assertEquals(0, proxy.isReachableCalls)
+        assertEquals(0, proxy.sendCalls)
+    }
+
+    @Test
+    fun unavailablePhoneSkipsProxyAfterDirectRecoveryFails() = runTest {
+        val direct = FakeGateway(sendError = IOException("offline"))
+        val proxy = FakeProxyGateway().apply { reachable = false }
+        val gateway = FailoverWearGateway(direct, proxy, sendLogger = {})
+
+        assertTrue(runCatching { gateway.sendMessage("chat", "request", "text", false) }.isFailure)
+        assertEquals(2, direct.sendCalls)
+        assertEquals(0, proxy.sendCalls)
+    }
+
+    @Test
+    fun reachableButUnresponsiveProxyHasShortSendBudget() = runTest {
+        val direct = FakeGateway(sendError = IOException("offline"))
+        val proxy = FakeProxyGateway().apply { sendDelayMs = 25_000L }
+        val gateway = FailoverWearGateway(direct, proxy, sendLogger = {})
+        val start = testScheduler.currentTime
+
+        assertTrue(runCatching { gateway.sendMessage("chat", "request", "text", false) }.isFailure)
+        assertEquals(8_000L, testScheduler.currentTime - start)
+        assertEquals(1, proxy.sendCalls)
     }
 
     @Test
@@ -151,7 +223,20 @@ class FailoverWearGatewayTest {
 private open class FakeGateway(
     private val sendError: Throwable? = null,
     private val createError: Throwable? = null,
+    private val sendFailures: Int = Int.MAX_VALUE,
 ) : WearGateway {
+    var speechDelayMs = 0L
+    var speechFailures = 0
+    var speechError: Throwable? = null
+    val speechBodies = mutableListOf<String>()
+    override suspend fun speechStream(body: JSONObject): JSONObject {
+        speechBodies += body.toString()
+        delay(speechDelayMs)
+        speechError?.let { throw it }
+        if (speechBodies.size <= speechFailures) throw IOException("lost packet response")
+        return JSONObject().put("status", "accepted")
+    }
+    var sendDelayMs = 0L
     var sendCalls = 0
     var lastRequestId: String? = null
     var lastWebSearch: Boolean? = null
@@ -184,7 +269,8 @@ private open class FakeGateway(
         lastRequestId = requestId
         lastWebSearch = webSearch
         lastResearchMode = researchMode
-        sendError?.let { throw it }
+        if (sendDelayMs > 0) delay(sendDelayMs)
+        if (sendCalls <= sendFailures) sendError?.let { throw it }
         return Job("job", "queued")
     }
     override suspend fun syncFallbackMessage(chatId: String, requestId: String, userText: String, assistantText: String) = "synced"
@@ -200,10 +286,11 @@ private open class FakeGateway(
 private class FakeProxyGateway : FakeGateway(), ProxyWearGateway {
     var isReachableCalls = 0
     var reachableDelayMs = 0L
+    var reachable = true
 
     override suspend fun isReachable(): Boolean {
         isReachableCalls += 1
         if (reachableDelayMs > 0) delay(reachableDelayMs)
-        return true
+        return reachable
     }
 }

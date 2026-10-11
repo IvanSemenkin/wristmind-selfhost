@@ -6,6 +6,9 @@ from urllib.parse import urlparse
 import asyncio
 import ipaddress
 import socket
+from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import urljoin
 
 import httpx
@@ -154,12 +157,73 @@ def web_search_sources(results: list[WebSearchResult]) -> str:
 
 MAX_WEB_PAGE_CHARS = 12_000
 
+
+async def extract_web_pdf(data: bytes) -> str:
+    """Read the text layer first; use the existing Vision provider for scans."""
+    from pypdf import PdfReader
+    from pypdf.errors import PyPdfError
+    from .config import get_settings
+    from .knowledge import normalize_text
+    from .providers import ProviderError, ProviderRouter
+
+    settings = get_settings()
+
+    def text_layer() -> tuple[list[str], bytes | None, list[int]]:
+        from pypdf import PdfWriter
+        reader = PdfReader(BytesIO(data))
+        if not 0 < len(reader.pages) <= settings.max_pdf_pages:
+            raise WebSearchUnavailable("PDF превышает допустимое число страниц")
+        texts = []
+        scanned = []
+        for index, page in enumerate(reader.pages):
+            try:
+                text = normalize_text(page.extract_text() or "")
+            except (PyPdfError, ValueError):
+                text = ""
+                scanned.append(index)
+            resources = page.get("/Resources", {})
+            if sum(char.isalnum() for char in text) < 20 and resources and resources.get_object().get("/XObject"):
+                if index not in scanned:
+                    scanned.append(index)
+            texts.append(text)
+        if sum(char.isalnum() for text in texts for char in text) < 20:
+            scanned = list(range(len(texts)))
+        if not scanned:
+            return texts, None, []
+        writer = PdfWriter()
+        for index in scanned:
+            writer.add_page(reader.pages[index])
+        output = BytesIO()
+        writer.write(output)
+        return texts, output.getvalue(), scanned
+
+    try:
+        texts, scan_data, scanned = await asyncio.to_thread(text_layer)
+        if scan_data is not None:
+            with TemporaryDirectory(prefix="wristmind-web-pdf-") as directory:
+                path = Path(directory) / "source.pdf"
+                await asyncio.to_thread(path.write_bytes, scan_data)
+                recognized = normalize_text(await ProviderRouter(settings).analyze_file(path, "application/pdf"))
+                import re
+                pages = re.split(r"(?m)^## Страница \d+\s*\n", recognized)[1:]
+                if len(pages) != len(scanned) or any(not page.strip() for page in pages):
+                    raise WebSearchUnavailable("В PDF не удалось распознать текст всех страниц")
+                for index, page in zip(scanned, pages):
+                    texts[index] = page.strip()
+        return "\n\n".join(f"## Страница {index}\n\n{text}" for index, text in enumerate(texts, 1) if text)
+    except WebSearchUnavailable:
+        raise
+    except (ProviderError, PyPdfError, ValueError, OSError) as exc:
+        raise WebSearchUnavailable("Не удалось распознать PDF-источник") from exc
+
+
 async def open_web_page(
     url: str,
     *,
     timeout_seconds: float,
     max_download_bytes: int,
     max_redirects: int,
+    max_pdf_download_bytes: int | None = None,
 ) -> tuple[str, str]:
     """Fetch a public result page with SSRF, redirect, time, and size limits."""
     current_url = await _validate_public_web_url(url)
@@ -181,14 +245,25 @@ async def open_web_page(
                         await _validate_public_web_url(current_url)
                         continue
                     response.raise_for_status()
+                    content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+                    is_pdf = content_type == "application/pdf" or urlparse(current_url).path.lower().endswith(".pdf")
+                    download_limit = (max_pdf_download_bytes or max_download_bytes) if is_pdf else max_download_bytes
                     declared_size = response.headers.get("content-length")
-                    if declared_size and int(declared_size) > max_download_bytes:
+                    if declared_size and int(declared_size) > download_limit and (
+                        is_pdf or content_type not in {"", "application/octet-stream"}
+                    ):
                         raise WebSearchUnavailable("Страница слишком большая для исследования")
                     body = bytearray()
                     async for chunk in response.aiter_bytes():
                         body.extend(chunk)
-                        if len(body) > max_download_bytes:
+                        # Some download endpoints serve PDFs as octet-stream.
+                        if not is_pdf and body[:5] == b"%PDF-":
+                            is_pdf = True
+                            download_limit = max_pdf_download_bytes or max_download_bytes
+                        if len(body) > download_limit:
                             raise WebSearchUnavailable("Страница слишком большая для исследования")
+                    if is_pdf:
+                        return current_url, await extract_web_pdf(bytes(body))
                     html = bytes(body).decode(response.encoding or "utf-8", errors="replace")
                     break
             else:  # pragma: no cover - guarded by the redirect branch above

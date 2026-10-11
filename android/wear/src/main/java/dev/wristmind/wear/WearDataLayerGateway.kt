@@ -28,6 +28,7 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.ensureActive
 import org.json.JSONObject
 
 interface ProxyWearGateway : WearGateway {
@@ -37,6 +38,8 @@ interface ProxyWearGateway : WearGateway {
 class DataLayerProxyGateway(context: Context) : ProxyWearGateway {
     private val capabilityClient = Wearable.getCapabilityClient(context)
     private val messageClient = Wearable.getMessageClient(context)
+
+    override suspend fun speechStream(body: JSONObject): JSONObject = ProxyJson.objectFrom(rpc(ProxyOperations.SPEECH_STREAM, body.toString().toByteArray()))
 
     override suspend fun isReachable(): Boolean = resolveNodeId() != null
 
@@ -246,6 +249,51 @@ class FailoverWearGateway(
         return value
     }
 
+    private val speechProxyRoutes = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    override suspend fun speechStream(body: JSONObject): JSONObject {
+        val id = body.getString("session_id")
+        val action = body.getString("action")
+        try {
+            if (speechProxyRoutes[id] == true) {
+                try {
+                    return proxy.speechStream(body)
+                } catch (error: Throwable) {
+                    if (error !is TimeoutCancellationException && !error.isDirectTransportFailure()) throw error
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    speechProxyRoutes.remove(id)
+                }
+            }
+            return try {
+                withTimeout(if (action == "finish") 30_000L else 20_000L) {
+                    direct.speechStream(body)
+                }.also { onRoute(false, cachedPhoneReachable ?: false) }
+            } catch (error: Throwable) {
+                if (error !is TimeoutCancellationException && !error.isDirectTransportFailure()) throw error
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                // Start/chunk/finish are idempotent: repeat the same packet when a
+                // radio handover lost its response, before abandoning direct HTTPS.
+                try {
+                    return withTimeout(if (action == "finish") 30_000L else 12_000L) {
+                        direct.speechStream(body)
+                    }.also { onRoute(false, cachedPhoneReachable ?: false) }
+                } catch (retryError: Throwable) {
+                    if (retryError !is TimeoutCancellationException && !retryError.isDirectTransportFailure()) throw retryError
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    if (!phoneReachable(force = true)) throw retryError
+                }
+                proxy.speechStream(body).also {
+                    // Once a live recording switches transport, avoid paying a failed direct
+                    // connect budget again for each audio packet.
+                    speechProxyRoutes[id] = true
+                    onRoute(true, true)
+                }
+            }
+        } finally {
+            if (action == "finish" || action == "cancel") speechProxyRoutes.remove(id)
+        }
+    }
+
     override suspend fun health(): Boolean = try {
         val healthy = direct.health()
         if (healthy) {
@@ -293,12 +341,31 @@ class FailoverWearGateway(
                 }
         } catch (error: Throwable) {
             if (error !is TimeoutCancellationException && !error.isDirectTransportFailure()) throw error
+            sendLogger("send_route request_id=$requestId event=direct_recovery_start elapsed_ms=${monotonicMillis() - startedAt}")
+            val recoveryError = try {
+                val job = withTimeout(DIRECT_RECOVERY_BUDGET_MS) {
+                    direct.recoverSendMessage(chatId, requestId, text, webSearch, webResearch, researchMode)
+                }
+                onRoute(false, cachedPhoneReachable ?: false)
+                sendLogger("send_route request_id=$requestId event=direct_recovery_accepted elapsed_ms=${monotonicMillis() - startedAt}")
+                return job
+            } catch (retryError: Throwable) {
+                if (retryError !is TimeoutCancellationException && !retryError.isDirectTransportFailure()) throw retryError
+                retryError
+            }
             val phone = phoneReachable(force = true)
-            onRoute(true, phone)
+            if (!phone) {
+                onRoute(false, false)
+                sendLogger("send_route request_id=$requestId event=proxy_skipped elapsed_ms=${monotonicMillis() - startedAt} reason=phone_unreachable")
+                throw recoveryError
+            }
+            onRoute(true, true)
             sendLogger(
-                "send_route request_id=$requestId event=proxy_start elapsed_ms=${monotonicMillis() - startedAt} reason=${error.javaClass.simpleName}",
+                "send_route request_id=$requestId event=proxy_start elapsed_ms=${monotonicMillis() - startedAt} reason=${recoveryError.javaClass.simpleName}",
             )
-            proxy.sendMessage(chatId, requestId, text, webSearch, webResearch, researchMode).also {
+            withTimeout(PROXY_SEND_BUDGET_MS) {
+                proxy.sendMessage(chatId, requestId, text, webSearch, webResearch, researchMode)
+            }.also {
                 sendLogger("send_route request_id=$requestId event=proxy_accepted elapsed_ms=${monotonicMillis() - startedAt}")
             }
         }
@@ -391,6 +458,8 @@ class FailoverWearGateway(
 // healthy-but-waking network look unavailable and turned an outbox item into a
 // false red error; 5 s was still short of a bad mobile round trip.
 private const val DIRECT_SEND_BUDGET_MS = 25_000L
+private const val DIRECT_RECOVERY_BUDGET_MS = 5_000L
+private const val PROXY_SEND_BUDGET_MS = 8_000L
 
 /**
  * A Data Layer capability query is a Play Services round trip that can outlive a

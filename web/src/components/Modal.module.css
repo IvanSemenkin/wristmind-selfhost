@@ -30,8 +30,9 @@
   flex-direction: column;
   width: 100%;
   max-height: min(86vh, 780px);
+  /* The dialog is a floating surface: it reads as elevated because it is a
+     lighter tone over a scrim, so it does not also need an outline. */
   background: var(--bg-surface-raised);
-  border: 1px solid var(--border-default);
   border-radius: var(--radius-2xl);
   box-shadow: var(--shadow-xl);
   overflow: hidden;
@@ -149,8 +150,6 @@
   justify-content: flex-end;
   gap: var(--space-4);
   padding: var(--space-7) var(--space-9);
-  border-top: 1px solid var(--border-muted);
-  background: var(--bg-inset);
   flex: none;
   flex-wrap: wrap;
 }
@@ -213,3 +212,9 @@
     min-width: 0;
   }
 }
+
+/* Conversation history reuses the accessible overlay, opening from the left. */
+.drawer.drawerLeft { left:0; right:auto; width:min(340px,calc(100% - 48px)); max-width:340px; border:none; border-radius:0; box-shadow:none; background:var(--bg-sidebar); animation:historyIn var(--duration-base) var(--ease-out); }
+.drawerLeft .header { background:var(--bg-sidebar); padding-top:max(var(--space-8),env(safe-area-inset-top)); }
+@keyframes historyIn { from { transform:translateX(-100%); } }
+@media(prefers-reduced-motion:reduce) { .drawer.drawerLeft { animation:none; } }

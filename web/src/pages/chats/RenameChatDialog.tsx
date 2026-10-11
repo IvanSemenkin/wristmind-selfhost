@@ -16,7 +16,7 @@ export function RenameChatDialog({ chat, onClose }: { chat: Chat | null; onClose
   }, [chat]);
 
   const submit = async () => {
-    if (!chat || value.trim().length === 0) return;
+    if (!chat || busy || value.trim().length === 0) return;
     setBusy(true);
     try {
       await actions.updateChat(chat.id, { title: value.trim() });
@@ -33,7 +33,7 @@ export function RenameChatDialog({ chat, onClose }: { chat: Chat | null; onClose
     <Modal
       open={chat !== null}
       onClose={onClose}
-      size="sm" title="Переименовать чат" description="Видно только в панели." footer={
+      size="sm" title="Переименовать чат" description="Название обновится на всех устройствах." footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
             Отмена
@@ -50,11 +50,11 @@ export function RenameChatDialog({ chat, onClose }: { chat: Chat | null; onClose
     >
       <Field label="Название чата" htmlFor="rename-chat">
         <Input
-          id="rename-chat" value={value}
+          id="rename-chat" value={value} maxLength={120} disabled={busy}
           autoFocus
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') void submit();
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); }
           }}
         />
       </Field>

@@ -1,362 +1,211 @@
-#!/usr/bin/env sh
-# WristMind installer and server management entry point.
-#
-#   ./wristmind              state-aware menu (install or manage)
-#   ./wristmind install      install, or reconcile an existing install
-#   ./wristmind check        check requirements (Docker, RAM, disk, port)
-#   ./wristmind status       print detected state and access addresses
-#   ./wristmind version      print the version of this checkout
-#
-# Flags for automation:
-#   ./wristmind install --domain=example.com --yes
-#   ./wristmind install --public-url=http://10.0.0.5:8080 --yes
-#
-# POSIX sh. Every action is idempotent: running it twice never reinstalls or
-# destroys data. The wizard paints a plan; unsupported menu items say so
-# instead of pretending.
+#!/usr/bin/env bash
+# Self-hosting CLI: diagnostics and resumable local-source installation.
+set -uo pipefail
+WM_INSTALL_DIR=${WRISTMIND_INSTALL_DIR:-/opt/wristmind}
+WM_DOMAIN=''
+WM_ACCESS_MODE=''
+WM_EXPECTED_IP=''
+WM_TOKEN_FILE=''
+WM_COMMAND='menu'
+WM_LOCAL_ROLE=embedding
+WM_LOCAL_YES=false
+WM_PORT=''
+WM_BIND=''
+WM_TIMEOUT=120
+WM_DEMO=false
+WM_RESUME=false
+WM_PACKAGE=''
+WM_URL=''
+WM_SHA256=''
+WM_CONFIRM_PROJECT=''
+WM_NO_SAFETY=false
+WM_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+usage() {
+  cat <<'EOF'
+WristMind — самостоятельная установка
+Использование: ./wristmind [menu|check|status|install|setup-link|access|version|install-release|update|backup|restore|rollback|remove|local-model|web-search] [параметры]
+  --install-dir ПУТЬ  Каталог установки (по умолчанию /opt/wristmind)
+  --domain ДОМЕН     Домен для access/install; в check — проверить DNS
+  --port ПОРТ       HTTP-порт установки (по умолчанию 8080)
+  --bind АДРЕС      127.0.0.1 по умолчанию; 0.0.0.0 явно открывает доступ из сети
+  --demo            Мок-провайдеры для локального просмотра без расходов
+  --resume          Продолжить свою незавершённую установку без замены секретов
+  --timeout СЕК     Ожидание запуска, 1–600 секунд (по умолчанию 120)
+  --role embedding  Назначение для local-model
+  --yes             Подтверждение загрузки локальной модели
+  -h, --help        Справка
 
-set -eu
-
-WM_ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
-WM_SERVER_DIR="$WM_ROOT/server"
-WM_DEPLOY_DIR="$WM_SERVER_DIR/deploy"
-
-if [ ! -f "$WM_DEPLOY_DIR/install.sh" ] || [ ! -f "$WM_DEPLOY_DIR/env.sh" ]; then
-    echo "ошибка: не найден server/deploy — запустите wristmind из корня репозитория." >&2
-    exit 1
-fi
-
-# shellcheck source=server/deploy/env.sh
-. "$WM_DEPLOY_DIR/env.sh"
-# shellcheck source=server/deploy/install.sh
-. "$WM_DEPLOY_DIR/install.sh"
-
-# ---------------------------------------------------------------------------
-# Small UI helpers
-# ---------------------------------------------------------------------------
-wm_hr() { printf '%s\n' '────────────────────────────────────────────'; }
-
-wm_header() {
-    printf 'WristMind · %s' "${1:-меню}"
-    _wm_v="$(wm_version_label "$WM_ROOT")"
-    printf '%*s%s\n' 0 '' "  ($_wm_v)"
-}
-
-wm_menu_item() {
-    printf '  %s) %s\n' "${1}" "${2}"
-}
-
-wm_not_implemented() {
-    printf '\n%s\n' "«$1» ещё не реализовано."
-    printf '%s\n' "Это запланированный шаг, а не ошибка. Текущее состояние: docs/SELF_HOSTING_STATUS.md."
-    return 0
-}
-
-wm_prompt() {
-    printf '\nВыбор: '
-}
-
-# State summary printed above both menus.
-wm_state_summary() {
-    _wm_state="$(wm_state "$WM_ROOT")"
-    _wm_server="$WM_SERVER_DIR"
-    _wm_port="$(wm_http_port "$_wm_server")"
-
-    printf '\n'
-    case "$_wm_state" in
-        installed)
-            printf '  Сервер:   работает\n'
-            ;;
-        configured)
-            printf '  Сервер:   настроен, контейнеры не запущены\n'
-            ;;
-        *)
-            printf '  Сервер:   не установлен\n'
-            ;;
-    esac
-    printf '  Порт:     %s\n' "$_wm_port"
-    if [ -n "${WRISTMIND_PUBLIC_BASE_URL:-}" ]; then
-        printf '  Адрес:    %s\n' "$WRISTMIND_PUBLIC_BASE_URL"
-    fi
-}
-
-# ---------------------------------------------------------------------------
-# Clean machine
-# ---------------------------------------------------------------------------
-wm_install_menu() {
-    wm_header "установка"
-    printf '\nСервер пока не установлен.\n'
-    wm_state_summary
-    printf '\n'
-    wm_menu_item 1 "Установить"
-    wm_menu_item 2 "Проверить требования (Docker, память, порты)"
-    wm_menu_item 3 "Что это и что понадобится"
-    wm_menu_item 4 "Локально, чтобы посмотреть (SQLite, моки, без ключей и часов)"
-    wm_menu_item 0 "Выход"
-    wm_prompt
-}
-
-wm_what_is_this() {
-    printf '\n%s\n' 'WristMind — ассистент на часах Wear OS.'
-    printf '%s\n' 'Голосовой чат, режимы и свои базы знаний. Данные остаются у владельца.'
-    printf '\n%s\n' 'Понадобится:'
-    printf '%s\n' '  - часы Wear OS (Xiaomi Watch 2 проверены);'
-    printf '%s\n' '  - сервер или VPS: 2 vCPU, 4 ГБ RAM, 10 ГБ диска;'
-    printf '%s\n' '  - домен: без HTTPS часы не подключатся;'
-    printf '%s\n' '  - ключ провайдера модели: OpenRouter или DeepSeek; оплата на владельце;'
-    printf '%s\n' '  - Wi-Fi, где на момент установки телефон и часы в одной сети.'
-    printf '\n%s\n' 'Не нужно: Google Play, аккаунты сторонних сервисов, VPN, ручной adb с ноутбука.'
-    printf '\n%s\n' 'Для первого запуска без сервера: выберите пункт 4 выше — это локальный
-режим на SQLite с моками, без ключей, домена и часов.'
-}
-
-wm_do_install() {
-    printf '\n'
-    if wm_install "$WM_ROOT" "$@"; then
-        return 0
-    fi
-    return 1
-}
-
-# ---------------------------------------------------------------------------
-# Already installed
-# ---------------------------------------------------------------------------
-wm_manage_menu() {
-    wm_header "управление"
-    wm_state_summary
-    printf '\n'
-    wm_menu_item 1 "Обновить до последней версии"
-    wm_menu_item 2 "Проверить состояние (здоровье, логи, порты)"
-    wm_menu_item 3 "Домен и HTTPS        → добавить / сменить / продлить"
-    wm_menu_item 4 "Ключи и провайдеры   → ключ модели, веб-поиск"
-    wm_menu_item 5 "Резервные копии      → создать / скачать / восстановить"
-    wm_menu_item 6 "Перезапустить"
-    wm_menu_item 7 "Остановить"
-    wm_menu_item 8 "Удалить установку"
-    wm_menu_item 9 "Показать доступы (панель, API, коды подключения)"
-    wm_menu_item 0 "Выход"
-    wm_prompt
-}
-
-wm_manage_health() {
-    _wm_port="$(wm_http_port "$WM_SERVER_DIR")"
-    _wm_tls="$(wm_env_get "$WM_SERVER_DIR" WRISTMIND_TLS_ENABLED)"
-    _wm_domain="$(wm_env_get "$WM_SERVER_DIR" WRISTMIND_DOMAIN)"
-    printf '\n'
-    if [ "$_wm_tls" = "true" ] && [ -n "$_wm_domain" ]; then
-        if wm_https_ok "$_wm_domain"; then
-            wm_ok "HTTPS отвечает: https://$_wm_domain/health"
-        else
-            wm_err "HTTPS не отвечает: https://$_wm_domain/health"
-        fi
-    elif wm_http_ok "http://127.0.0.1:${_wm_port}/health"; then
-        wm_ok "API отвечает на http://127.0.0.1:${_wm_port}/health"
-    else
-        wm_err "API не отвечает на http://127.0.0.1:${_wm_port}/health"
-    fi
-    if wm_have_compose; then
-        printf '\n%s\n' 'Контейнеры:'
-        wm_compose "$WM_SERVER_DIR" ps -a 2>&1 | sed 's/^/  /'
-    fi
-}
-
-wm_manage_restart() {
-    printf '\n'
-    if wm_compose_log "$WM_SERVER_DIR" restart; then
-        wm_ok "контейнеры перезапущены"
-    else
-        wm_err "не удалось перезапустить контейнеры"
-        return 1
-    fi
-}
-
-wm_manage_stop() {
-    printf '\n'
-    if wm_compose_log "$WM_SERVER_DIR" stop; then
-        wm_ok "контейнеры остановлены, тома с данными не тронуты"
-    else
-        wm_err "не удалось остановить контейнеры"
-        return 1
-    fi
-}
-
-wm_manage_access() {
-    _wm_port="$(wm_http_port "$WM_SERVER_DIR")"
-    wm_access_block "$WM_ROOT" "http://127.0.0.1:${_wm_port}"
-}
-
-# Interactive entry for "Домен и HTTPS": asks only for what is missing.
-wm_manage_tls_gate() {
-    printf '\n'
-    _wm_domain="$(wm_env_get "$WM_SERVER_DIR" WRISTMIND_DOMAIN)"
-    _wm_email="$(wm_env_get "$WM_SERVER_DIR" WRISTMIND_TLS_EMAIL)"
-    if [ -z "$_wm_domain" ]; then
-        printf '\nДомен (например watch.example.com): '
-        IFS= read -r _wm_domain || return 0
-    fi
-    if [ -z "$_wm_domain" ]; then
-        wm_err "домен не задан"
-        return 0
-    fi
-    if [ -z "$_wm_email" ]; then
-        printf 'Адрес для ACME (Let'"'"'s Encrypt): '
-        IFS= read -r _wm_email || return 0
-    fi
-    if [ -z "$_wm_email" ]; then
-        wm_err "адрес не задан"
-        return 0
-    fi
-    wm_tls "$WM_ROOT" "--domain=$_wm_domain" "--email=$_wm_email"
-}
-
-wm_manage_menu_loop() {
-    _wm_again=1
-    while [ "$_wm_again" -eq 1 ]; do
-        wm_manage_menu
-        if ! IFS= read -r _wm_choice; then
-            printf '\n'
-            return 0
-        fi
-        _wm_again=0
-        case "$_wm_choice" in
-            1) wm_not_implemented "Обновить до последней версии" ;;
-            2) wm_manage_health ;;
-            3) wm_manage_tls_gate ;;
-            4) wm_not_implemented "Ключи и провайдеры" ;;
-            5) wm_not_implemented "Резервные копии" ;;
-            6) wm_manage_restart ;;
-            7) wm_manage_stop ;;
-            8) wm_not_implemented "Удалить установку" ;;
-            9) wm_manage_access ;;
-            0 | q | Q | "") return 0 ;;
-            *) printf '\nНеизвестный пункт: %s\n' "$_wm_choice" ;;
-        esac
-        _wm_again=1
-    done
-}
-
-wm_install_menu_loop() {
-    _wm_again=1
-    while [ "$_wm_again" -eq 1 ]; do
-        wm_install_menu
-        if ! IFS= read -r _wm_choice; then
-            printf '\n'
-            return 0
-        fi
-        _wm_again=0
-        case "$_wm_choice" in
-            1)
-                if wm_do_install; then
-                    return 0
-                fi
-                return 1
-                ;;
-            2)
-                printf '\n%s\n' 'Проверка требований:'
-                wm_requirements "$WM_ROOT" || true
-                ;;
-            3) wm_what_is_this ;;
-            4)
-                if wm_do_install --local; then
-                    return 0
-                fi
-                return 1
-                ;;
-            0 | q | Q | "") return 0 ;;
-            *) printf '\nНеизвестный пункт: %s\n' "$_wm_choice" ;;
-        esac
-        _wm_again=1
-    done
-}
-
-# ---------------------------------------------------------------------------
-# Command dispatch
-# ---------------------------------------------------------------------------
-wm_cmd_install() {
-    shift
-    _wm_yes=0
-    _wm_args=""
-    for _wm_arg in "$@"; do
-        case "$_wm_arg" in
-            --yes | -y) _wm_yes=1 ;;
-            *) _wm_args="$_wm_args $_wm_arg" ;;
-        esac
-    done
-    # shellcheck disable=SC2086
-    wm_install "$WM_ROOT" $_wm_args
-}
-
-wm_cmd_check() {
-    printf 'Проверка требований:\n'
-    wm_requirements "$WM_ROOT"
-}
-
-wm_cmd_status() {
-    _wm_state="$(wm_state "$WM_ROOT")"
-    printf 'Состояние: %s\n' "$_wm_state"
-    printf 'Версия:    %s\n' "$(wm_version_label "$WM_ROOT")"
-    printf 'Порт:      %s\n' "$(wm_http_port "$WM_SERVER_DIR")"
-    printf '.env:      %s\n' "$(wm_env_file "$WM_SERVER_DIR")"
-    _wm_domain="$(wm_env_get "$WM_SERVER_DIR" WRISTMIND_DOMAIN)"
-    if [ -n "$_wm_domain" ]; then
-        _wm_tls="$(wm_env_get "$WM_SERVER_DIR" WRISTMIND_TLS_ENABLED)"
-        if [ "$_wm_tls" = "true" ]; then
-            printf 'Домен:     %s · HTTPS включён\n' "$_wm_domain"
-        else
-            printf 'Домен:     %s · HTTPS не включён\n' "$_wm_domain"
-        fi
-    fi
-}
-
-wm_cmd_tls() {
-    shift
-    wm_tls "$WM_ROOT" "$@"
-}
-
-wm_cmd_help() {
-    cat <<'EOF'
-WristMind — установка и управление сервером.
-
-  ./wristmind                     меню по состоянию машины
-  ./wristmind install             установить или согласовать установку
-  ./wristmind install --domain=example.com --yes
-  ./wristmind install --public-url=http://10.0.0.5:8080 --yes
-  ./wristmind install --local     локальный просмотр: SQLite, моки, без домена
-  ./wristmind install --with-search    дополнительно поднять приватный SearXNG
-  ./wristmind tls --domain=example.com --email=you@example.com
-                                  выпустить сертификат и включить HTTPS
-  ./wristmind tls ... --staging   проверка на тестовом ACME-контуре
-  ./wristmind check               проверить требования
-  ./wristmind status              показать определённое состояние
-  ./wristmind version             версия этого чекаута
-
-Повторный запуск ничего не ломает и не переустанавливает.
+Установка из текущих исходников: ./wristmind install --install-dir "$HOME/wristmind-server" --demo
+Docker/Compose должны быть установлены заранее. setup-link выдаёт одноразовую ссылку первого входа.
+Настройка сейчас или позже: ./wristmind access --install-dir КАТАЛОГ
+  --mode local|domain|tunnel|check  Вариант доступа (без параметра — меню)
+  --expected-ip IP[,IPv6]         Проверка всех A/AAAA для своего домена
+  --tunnel-token-file ПУТЬ        Закрытый файл токена Cloudflare Tunnel
+Пример: ./wristmind access --install-dir /opt/wristmind --mode domain --domain ai.example.org --expected-ip 203.0.113.10
+Обслуживание — только терминал:
+  update/install-release --package ФАЙЛ (либо --url HTTPS) --sha256 SHA256
+  backup                      Согласованная копия базы/файлов/настроек/образа
+  restore --package ФАЙЛ --sha256 SHA256 --confirm-project ИМЯ
+  rollback --confirm-project ИМЯ   Возврат к предыдущему состоянию
+  remove --confirm-project ИМЯ     Удалить контейнеры, сохранить томы/данные
+  version                     Версия, имя проекта, состояние обслуживания
+  --no-safety-backup           Явное аварийное restore без копирования повреждённого состояния
 EOF
 }
-
-wm_main() {
-    _wm_cmd="${1:-menu}"
-    case "$_wm_cmd" in
-        menu | "")
-            _wm_state="$(wm_state "$WM_ROOT")"
-            if [ "$_wm_state" = "empty" ]; then
-                wm_install_menu_loop
-            else
-                wm_manage_menu_loop
-            fi
-            ;;
-        install) wm_cmd_install "$@" ;;
-        tls) wm_cmd_tls "$@" ;;
-        check) wm_cmd_check ;;
-        status) wm_cmd_status ;;
-        version) printf '%s\n' "$(wm_version_label "$WM_ROOT")" ;;
-        help | --help | -h) wm_cmd_help ;;
-        *)
-            wm_err "неизвестная команда: $_wm_cmd"
-            wm_cmd_help >&2
-            return 1
-            ;;
-    esac
+if [[ $# -gt 0 && $1 != -* ]]; then WM_COMMAND=$1; shift; fi
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --role|--install-dir|--domain|--port|--bind|--timeout|--mode|--expected-ip|--tunnel-token-file|--package|--url|--sha256|--confirm-project)
+      [[ $# -ge 2 && -n $2 && $2 != -* ]] || { echo 'Не хватает значения параметра.' >&2; exit 2; }
+      case $1 in --role) WM_LOCAL_ROLE=$2;; --install-dir) WM_INSTALL_DIR=$2;; --domain) WM_DOMAIN=$2;; --port) WM_PORT=$2;; --bind) WM_BIND=$2;; --timeout) WM_TIMEOUT=$2;; --mode) WM_ACCESS_MODE=$2;; --expected-ip) WM_EXPECTED_IP=$2;; --tunnel-token-file) WM_TOKEN_FILE=$2;; --package) WM_PACKAGE=$2;; --url) WM_URL=$2;; --sha256) WM_SHA256=$2;; --confirm-project) WM_CONFIRM_PROJECT=$2;; esac
+      shift 2;;
+    --no-safety-backup) WM_NO_SAFETY=true; shift;;
+    --yes) WM_LOCAL_YES=true; shift;;
+    --demo) WM_DEMO=true; shift;;
+    --resume) WM_RESUME=true; shift;;
+    -h|--help) usage; exit 0;;
+    *) echo 'Неизвестный параметр. Используйте --help.' >&2; exit 2;;
+  esac
+done
+[[ $WM_INSTALL_DIR == /* && $WM_INSTALL_DIR != / ]] || { echo 'Укажите абсолютный каталог установки, отличный от /.' >&2; exit 2; }
+if [[ -n $WM_PORT ]] && { [[ ! $WM_PORT =~ ^[0-9]{1,5}$ ]] || (( 10#$WM_PORT < 1 || 10#$WM_PORT > 65535 )); }; then
+  echo 'Порт должен быть числом от 1 до 65535.' >&2; exit 2
+fi
+if [[ -n $WM_BIND && $WM_BIND != 127.0.0.1 && $WM_BIND != 0.0.0.0 ]]; then
+  echo 'Адрес должен быть 127.0.0.1 или 0.0.0.0.' >&2; exit 2
+fi
+if [[ -n $WM_DOMAIN && ! $WM_DOMAIN =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]]; then
+  echo 'Некорректный домен: укажите имя без протокола, порта и пути.' >&2; exit 2
+fi
+if [[ -n $WM_ACCESS_MODE && $WM_ACCESS_MODE != local && $WM_ACCESS_MODE != domain && $WM_ACCESS_MODE != tunnel && $WM_ACCESS_MODE != check ]]; then
+  echo 'Режим доступа: local, domain, tunnel или check.' >&2; exit 2
+fi
+if [[ $WM_COMMAND == install && -n $WM_DOMAIN && ${WM_ACCESS_MODE:-domain} == domain && -z $WM_EXPECTED_IP ]]; then
+  echo 'Для установки с доменом укажите --expected-ip. Можно установить без домена и настроить access позже.' >&2; exit 2
+fi
+state() {
+  if command -v python3 >/dev/null; then
+    python3 "$WM_ROOT/selfhost/installer.py" state --install-dir "$WM_INSTALL_DIR"
+  else echo incomplete; fi
 }
 
-wm_main "$@"
+status() {
+  case $(state) in
+    installed) echo 'Установка обнаружена и ранее прошла health-проверку. Текущая доступность контейнеров не проверялась.';
+      if [[ -f $WM_INSTALL_DIR/.wristmind-operation || -f $WM_INSTALL_DIR/.wristmind-last-update ]]; then maintenance version || true; fi;;
+    incomplete) echo 'Обнаружена незавершённая или прежняя установка. Файлы сохранены; автоматическая перезапись запрещена.';;
+    occupied) echo 'Каталог занят другими файлами. Автоматическая перезапись запрещена.';;
+    new) echo 'WristMind ещё не установлен в выбранном каталоге.';;
+  esac
+}
+check() {
+  local failed=0 available='' cores='' ancestor="$WM_INSTALL_DIR" port
+  echo 'Проверка требований (без изменения системы)'
+  if [[ $(uname -s) == Linux ]]; then echo '✓ Linux'; else echo '✗ Для серверного установщика нужен Linux'; failed=1; fi
+  if command -v docker >/dev/null && command -v timeout >/dev/null; then
+    if timeout 10 docker info >/dev/null 2>&1; then echo '✓ Docker доступен'; else echo '✗ Docker не запущен или нет доступа к нему'; failed=1; fi
+    if timeout 10 docker compose version >/dev/null 2>&1; then echo '✓ Docker Compose v2'; else echo '✗ Нужен Docker Compose v2'; failed=1; fi
+  else echo '✗ Нужны Docker и timeout (coreutils)'; failed=1; fi
+  if command -v python3 >/dev/null && python3 -c 'import sys; sys.exit(sys.version_info < (3,10))'; then echo '✓ Python 3.10+'; else echo '✗ Нужен Python 3.10+'; failed=1; fi
+  python3 "$WM_ROOT/selfhost/resources.py" "$WM_INSTALL_DIR"
+  cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+  if [[ $cores =~ ^[0-9]+$ ]] && (( cores >= 2 )); then echo '✓ Не менее 2 CPU'; else echo '✗ Нужно не менее 2 CPU'; failed=1; fi
+  available=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || true)
+  if [[ $available =~ ^[0-9]+$ ]] && (( available >= 3900000 )); then echo '✓ Не менее 4 ГБ RAM'; else echo '✗ Нужно около 4 ГБ RAM'; failed=1; fi
+  while [[ ! -d $ancestor && $ancestor != / ]]; do ancestor=$(dirname "$ancestor"); done
+  available=$(df -Pk "$ancestor" 2>/dev/null | awk 'NR==2 {print $4}')
+  if [[ $available =~ ^[0-9]+$ ]] && (( available >= 10485760 )); then echo '✓ Не менее 10 ГБ свободного места'; else echo '✗ Нужно 10 ГБ свободного места'; failed=1; fi
+  if [[ $(state) == new ]]; then
+    if command -v ss >/dev/null; then
+      for port in "${WM_PORT:-8080}"; do
+        if [[ -n $(ss -H -ltn "sport = :$port" 2>/dev/null) ]]; then echo "✗ Порт $port занят"; failed=1; else echo "✓ Порт $port свободен"; fi
+      done
+    else echo '✗ Для проверки портов нужен ss (iproute2)'; failed=1; fi
+  else echo '• Проверка свободных портов пропущена: каталог уже занят или есть установка'; fi
+  if [[ -n $WM_DOMAIN ]]; then
+    if getent ahosts "$WM_DOMAIN" >/dev/null 2>&1; then echo '✓ Имя домена разрешается в DNS (совпадение с IP сервера ещё не проверено)'; else echo '✗ Домен не разрешается в DNS'; failed=1; fi
+  else echo '• Домен не задан. Для подключения часов потребуется HTTPS'; fi
+  return "$failed"
+}
+install() {
+  local arguments=(install --install-dir "$WM_INSTALL_DIR" --timeout "$WM_TIMEOUT")
+  [[ -z $WM_PORT ]] || arguments+=(--port "$WM_PORT")
+  [[ -z $WM_BIND ]] || arguments+=(--bind "$WM_BIND")
+  [[ $WM_DEMO == false ]] || arguments+=(--demo)
+  [[ $WM_RESUME == false ]] || arguments+=(--resume)
+  if ! command -v python3 >/dev/null; then echo 'Нужен Python 3.10+' >&2; return 1; fi
+  python3 "$WM_ROOT/selfhost/installer.py" "${arguments[@]}" || return $?
+  if [[ -n $WM_DOMAIN ]]; then
+    WM_ACCESS_MODE=${WM_ACCESS_MODE:-domain}
+    access
+    return $?
+  fi
+  if [[ -t 0 ]]; then
+    local answer
+    read -r -p 'Настроить домен / HTTPS / туннель сейчас? [д/Н] ' answer || return 0
+    [[ $answer != д && $answer != Д && $answer != y && $answer != Y ]] || access
+  fi
+}
+access() {
+  local arguments=(--install-dir "$WM_INSTALL_DIR")
+  [[ -z $WM_ACCESS_MODE ]] || arguments+=(--mode "$WM_ACCESS_MODE")
+  [[ -z $WM_DOMAIN ]] || arguments+=(--domain "$WM_DOMAIN")
+  [[ -z $WM_EXPECTED_IP ]] || arguments+=(--expected-ip "$WM_EXPECTED_IP")
+  [[ -z $WM_TOKEN_FILE ]] || arguments+=(--tunnel-token-file "$WM_TOKEN_FILE")
+  python3 "$WM_ROOT/selfhost/access.py" "${arguments[@]}"
+}
+
+maintenance() {
+  local action=$1
+  shift
+  local arguments=("$action" --install-dir "$WM_INSTALL_DIR")
+  [[ -z $WM_PACKAGE ]] || arguments+=(--package "$WM_PACKAGE")
+  [[ -z $WM_URL ]] || arguments+=(--url "$WM_URL")
+  [[ -z $WM_SHA256 ]] || arguments+=(--sha256 "$WM_SHA256")
+  [[ -z $WM_CONFIRM_PROJECT ]] || arguments+=(--confirm-project "$WM_CONFIRM_PROJECT")
+  [[ -z $WM_PORT ]] || arguments+=(--port "$WM_PORT")
+  [[ $WM_DEMO == false ]] || arguments+=(--demo)
+  [[ $WM_RESUME == false ]] || arguments+=(--resume)
+  [[ $WM_NO_SAFETY == false ]] || arguments+=(--no-safety-backup)
+  python3 "$WM_ROOT/selfhost/lifecycle.py" "${arguments[@]}" "$@"
+}
+maintenance_menu() {
+  local action package checksum project
+  echo '1) Версия  2) Обновить из пакета  3) Бэкап  4) Восстановить бэкап  5) Откат  6) Удалить контейнеры (данные сохранятся)  0) Назад'
+  read -r -p '> ' action || return 0
+  case $action in
+    1) maintenance version;;
+    2|4)
+      read -r -p 'Путь к пакету: ' package || return 0
+      read -r -p 'SHA256 из доверенного источника: ' checksum || return 0
+      if [[ $action == 2 ]]; then maintenance update --package "$package" --sha256 "$checksum"
+      else
+        echo 'Восстановление заменит нынешние данные состоянием из бэкапа.'
+        read -r -p 'Имя проекта для подтверждения: ' project || return 0
+        maintenance restore --package "$package" --sha256 "$checksum" --confirm-project "$project"
+      fi;;
+    3) maintenance backup;;
+    5|6)
+      maintenance version || return $?
+      read -r -p 'Имя проекта для подтверждения: ' project || return 0
+      if [[ $action == 5 ]]; then maintenance rollback --confirm-project "$project"
+      else maintenance remove --confirm-project "$project"; fi;;
+    0) return 0;; *) echo 'Выберите 0–6.'; return 2;;
+  esac
+}
+menu() {
+  if [[ ! -t 0 ]]; then status; echo 'Для меню откройте терминал; для диагностики используйте ./wristmind check.'; return 0; fi
+  local choice
+  while true; do
+    echo; echo 'WristMind · самостоятельная установка'; status
+    echo '1) Проверить требования'; echo '2) Показать состояние'; echo '3) Установить / продолжить установку'; echo '4) Домен / HTTPS / туннель'; echo '5) Обновления и резервные копии'; echo '0) Выход'
+    read -r -p '> ' choice || return 0
+    case $choice in 1) check || true;; 2) status;; 3) if [[ $(state) == incomplete ]]; then WM_RESUME=true; fi; install || true;; 4) access || true;; 5) maintenance_menu || true;; 0) return 0;; *) echo 'Выберите 0–5.';; esac
+  done
+}
+local_model() {
+  local arguments=(--install-dir "$WM_INSTALL_DIR" --role "$WM_LOCAL_ROLE")
+  [[ $WM_LOCAL_YES == false ]] || arguments+=(--yes)
+  python3 "$WM_ROOT/selfhost/local_models.py" "${arguments[@]}"
+}
+case $WM_COMMAND in web-search) python3 "$WM_ROOT/selfhost/web_search.py" --install-dir "$WM_INSTALL_DIR";; local-model) local_model;; menu) menu;; check) check;; status) status;; install) install;; access) access;; version|install-release|update|backup|restore|rollback|remove) maintenance "$WM_COMMAND";; setup-link) python3 "$WM_ROOT/selfhost/installer.py" setup-link --install-dir "$WM_INSTALL_DIR";; *) echo 'Неизвестная команда. Используйте --help.' >&2; exit 2;; esac

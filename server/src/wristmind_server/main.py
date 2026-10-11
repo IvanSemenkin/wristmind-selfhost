@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import httpx
 import json
 import logging
 import re
@@ -12,18 +11,19 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from pydantic import SecretStr
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.exc import IntegrityError
 
+from .speech_stream import router as speech_stream_router
 from .config import Settings, get_settings, resolve_model_id
 from .database import SessionFactory, close_database, get_session, init_database
 from .db_models import (
+    AccountEvent,
     AppSettings,
     Chat,
     ChatSourceCandidate,
@@ -38,6 +38,9 @@ from .db_models import (
     PushRegistration,
     PromptOverride,
     ReferencedWebSource,
+    RawWebSource,
+    TelegramAccount,
+    TelegramEmojiDraft,
     User,
     utcnow,
 )
@@ -78,34 +81,21 @@ from .schemas import (
     PushTokenUpdate,
     PromptRecord,
     PromptUpdate,
+    WearDiagnosticsUpload,
     QuickChatCreate,
     TranscriptionResponse,
     CurrentUserResponse,
-    ProviderKeyCheckRequest,
-    ProviderKeyCheckResponse,
-    ProviderKeySaveRequest,
-    ProviderKeySaveResponse,
-    SetupFirstChatResponse,
-    SetupStatusResponse,
 )
 from .fallback_auth import issue_fallback_ticket
-from . import latency_trace
+from . import account_events, latency_trace
 from .providers import ProviderError, ProviderRouter
 from .prompt_registry import DEFAULT_TEMPLATES, PROMPT_LABELS, required_markers
 from .push import schedule_watch_state_changed
 from .security import admin_device, client_ip, current_device, hash_secret, issue_device_token, issue_pairing_code
+from .telegram_bot import bot_is_enabled, handle_update
 
 
 logger = logging.getLogger("uvicorn.error")
-# Matches a container id inside /proc/self/cgroup or /etc/hostname, so the API
-# can ask Docker to restart itself after an environment change.
-_CONTAINER_ID_RE = re.compile(r"([0-9a-f]{12,64})")
-
-SETUP_FIRST_MODE_NAME = "Первый режим"
-SETUP_FIRST_MODE_PROMPT = (
-    "Ты — WristMind. Отвечай на языке пользователя кратко и по делу. "
-    "Не выдумывай факты; если не уверен — скажи."
-)
 
 QUICK_CHAT_MODE_NAME = "Быстрый чат"
 QUICK_CHAT_MODE_DESCRIPTION = "Школа, быт, готовка и любые общие вопросы."
@@ -137,13 +127,31 @@ async def lifespan(_: FastAPI):
         await session.execute(update(Chat).where(Chat.user_id.in_(legacy_users)).values(user_id=owner.id))
         await session.execute(update(KnowledgeSource).where(KnowledgeSource.user_id.is_(None)).values(user_id=owner.id))
         await session.execute(update(KnowledgeSource).where(KnowledgeSource.user_id.in_(legacy_users)).values(user_id=owner.id))
+        await session.execute(update(TelegramAccount).where(TelegramAccount.user_id.in_(legacy_users)).values(user_id=owner.id))
+        await session.execute(update(TelegramEmojiDraft).where(TelegramEmojiDraft.user_id.in_(legacy_users)).values(user_id=owner.id))
         await session.execute(update(User).where(User.id != owner.id, User.deleted_at.is_(None)).values(deleted_at=utcnow()))
         await session.commit()
+    # The panel's live stream is resumable within this window; older rows are
+    # dropped and a lagging cursor gets `resync` instead of a silent gap.
+    async with SessionFactory() as session:
+        try:
+            await account_events.prune_account_events(session)
+        except Exception:  # pragma: no cover - retention must never block startup
+            logger.warning("Could not prune account events", exc_info=True)
+    # Diagnostic-only live latency feed; a no-op unless explicitly enabled.
+    latency_trace.start_telegram_worker(get_settings())
     yield
+    await latency_trace.stop_telegram_worker()
     await close_database()
 
 
 app = FastAPI(title="WristMind API", version="1.0.0", lifespan=lifespan)
+app.include_router(speech_stream_router)
+from .feature_capabilities import router as capabilities_router
+app.include_router(capabilities_router)
+from .provider_registry import router as provider_registry_router
+app.include_router(provider_registry_router)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origins,
@@ -163,10 +171,30 @@ def valid_wear_diagnostic_line(line: str) -> bool:
         "transport": ("wear_transport ",),
         "route": ("send_route ", "create_route ", "source_save "),
         "send": ("send_timing ", "answer_total_ms="),
+        "speech": ("speech_transport ",),
     }
     return all(32 <= ord(char) < 127 for char in line) and parts[2].startswith(
         prefixes.get(parts[1], ())
     )
+
+
+@app.post("/v1/diagnostics/wear")
+async def upload_wear_diagnostics(
+    request: WearDiagnosticsUpload,
+    device: Device = Depends(current_device),
+) -> dict[str, int]:
+    if device.kind != "WATCH":
+        raise HTTPException(status_code=403, detail="Watch device required")
+    if not latency_trace.manual_wear_diagnostics_available():
+        raise HTTPException(status_code=503, detail="Diagnostics Telegram is unavailable")
+    if any(not valid_wear_diagnostic_line(line) for line in request.lines):
+        raise HTTPException(status_code=422, detail="Invalid diagnostic line")
+    try:
+        await latency_trace.send_wear_diagnostics(request.lines, device.id)
+    except Exception as error:
+        logger.warning("Wear diagnostic export failed: %s", type(error).__name__)
+        raise HTTPException(status_code=502, detail="Diagnostic delivery failed") from None
+    return {"sent": len(request.lines)}
 
 
 def chat_response(chat: Chat) -> ChatResponse:
@@ -176,6 +204,7 @@ def chat_response(chat: Chat) -> ChatResponse:
         mode_name=chat.mode_name_snapshot,
         mode_deleted=chat.mode.deleted_at is not None,
         title=chat.title,
+        pinned=chat.pinned,
         created_at=chat.created_at,
         updated_at=chat.updated_at,
     )
@@ -219,355 +248,19 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "version": "1.0.0"}
 
 
-# ---------------------------------------------------------------------------
-# First-run setup (/setup)
-#
-# The wizard needs to know whether this installation is already claimed and
-# whether it can actually answer. These routes are unauthenticated on purpose
-# and expose booleans and counts only: never keys, addresses or tokens.
-# ---------------------------------------------------------------------------
-_PROVIDER_ENV_KEYS = {
-    "openrouter": "WRISTMIND_OPENROUTER_API_KEY",
-    "deepseek": "WRISTMIND_DEEPSEEK_API_KEY",
-}
-_ENV_FILE_PATH = Path(__file__).resolve().parents[2] / ".env"
-# Markers that mean "no key was ever supplied".
-_PLACEHOLDER_KEYS = {"", "change-me", "test-deepseek-key"}
-
-
-def _provider_key_is_real(secret: object) -> bool:
-    if secret is None:
-        return False
-    value = secret.get_secret_value() if hasattr(secret, "get_secret_value") else str(secret)
-    return value.strip() not in _PLACEHOLDER_KEYS
-
-
-def _providers_with_keys(settings: Settings) -> list[str]:
-    found: list[str] = []
-    if _provider_key_is_real(settings.openrouter_api_key):
-        found.append("openrouter")
-    if _provider_key_is_real(settings.deepseek_api_key):
-        found.append("deepseek")
-    return found
-
-
-def _update_env_file(path: Path, updates: dict[str, str]) -> None:
-    """Set ``KEY=value`` lines, preserving comments and unrelated values."""
-    lines: list[str] = []
-    if path.is_file():
-        lines = path.read_text(encoding="utf-8").splitlines()
-    remaining = dict(updates)
-    result: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        matched = None
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            name = stripped.split("=", 1)[0].strip()
-            if name in remaining:
-                matched = name
-        if matched is not None:
-            result.append(f"{matched}={remaining.pop(matched)}")
-        else:
-            result.append(line)
-    for name, value in remaining.items():
-        result.append(f"{name}={value}")
-    path.write_text("\n".join(result).rstrip("\n") + "\n", encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
-
-
-@app.get("/v1/setup/status", response_model=SetupStatusResponse)
-async def setup_status(
-    session: AsyncSession = Depends(get_session),
+@app.post("/v1/telegram/webhook", status_code=204)
+async def telegram_webhook(
+    update: dict[str, object],
+    secret: str | None = Header(None, alias="X-Telegram-Bot-Api-Secret-Token"),
     settings: Settings = Depends(get_settings),
-) -> SetupStatusResponse:
-    """Honest state of a fresh installation, safe to call before enrollment."""
-    database_ok = True
-    try:
-        admin_devices = int(
-            await session.scalar(
-                select(func.count())
-                .select_from(Device)
-                .where(Device.is_admin.is_(True), Device.revoked_at.is_(None))
-            )
-            or 0
-        )
-        active_modes = int(
-            await session.scalar(select(func.count()).select_from(Mode).where(Mode.deleted_at.is_(None))) or 0
-        )
-        knowledge_sources = int(
-            await session.scalar(
-                select(func.count()).select_from(KnowledgeSource).where(KnowledgeSource.deleted_at.is_(None))
-            )
-            or 0
-        )
-    except Exception:  # noqa: BLE001 - the wizard must survive a broken database
-        logger.exception("setup status could not read the database")
-        database_ok = False
-        admin_devices = active_modes = knowledge_sources = 0
-
-    with_keys = _providers_with_keys(settings)
-    provider_mode = "mock" if settings.mock_providers else "live"
-    provider_ready = settings.mock_providers or bool(with_keys)
-    instance_claimed = admin_devices > 0
-
-    # The wizard offers to finish setup on an empty install: report whether a
-    # first mode already exists instead of guessing on the client.
-    first_mode_id: str | None = None
-    if database_ok:
-        try:
-            first_mode_id = await session.scalar(
-                select(Mode.id).where(Mode.deleted_at.is_(None)).order_by(Mode.created_at).limit(1)
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("setup status could not read the first mode")
-            first_mode_id = None
-
-    # A one-time marker in app_settings stops the wizard from reappearing.
-    # If the row is missing this reports "not completed", never an error.
-    first_run_completed = False
-    if database_ok:
-        try:
-            app_settings = await session.get(AppSettings, 1)
-            first_run_completed = bool(app_settings and app_settings.first_run_completed)
-        except Exception:  # noqa: BLE001 - the wizard must survive a broken schema
-            logger.exception("setup status could not read the first-run flag")
-            first_run_completed = False
-
-    return SetupStatusResponse(
-        first_run_completed=first_run_completed,
-        instance_claimed=instance_claimed,
-        admin_devices=admin_devices,
-        active_modes=active_modes,
-        knowledge_sources=knowledge_sources,
-        database_ok=database_ok,
-        provider_mode=provider_mode,
-        provider_ready=provider_ready,
-        providers_with_keys=with_keys,
-        setup_required=not instance_claimed,
-        first_mode_id=first_mode_id,
-    )
-
-
-@app.post("/v1/setup/first-chat", response_model=SetupFirstChatResponse, status_code=202)
-async def setup_first_chat(
-    device: Device = Depends(current_device),
-    session: AsyncSession = Depends(get_session),
-    settings: Settings = Depends(get_settings),
-) -> SetupFirstChatResponse:
-    """Create the first mode and chat on an empty install.
-
-    Idempotent by name: running it again reuses the existing mode, so the
-    wizard never produces duplicates. No knowledge source is attached; the
-    owner adds those in the usual knowledge section.
-    """
-    owner = await owner_for_device(device, session)
-    mode = await session.scalar(
-        select(Mode).where(Mode.name == SETUP_FIRST_MODE_NAME, Mode.deleted_at.is_(None))
-    )
-    if mode is None:
-        settings_row = await session.get(AppSettings, 1)
-        model_id = settings_row.default_model_id if settings_row else settings.default_model_id
-        mode = Mode(
-            name=SETUP_FIRST_MODE_NAME,
-            description="Создан мастером первого запуска. Переименуйте или удалите.",
-            color="#65F5C2",
-            icon="sparkles",
-            system_prompt=SETUP_FIRST_MODE_PROMPT,
-            response_model_id=model_id,
-        )
-        session.add(mode)
-        await session.flush()
-
-    chat = await session.scalar(
-        select(Chat)
-        .where(Chat.mode_id == mode.id, Chat.user_id == owner.id, Chat.deleted_at.is_(None))
-        .order_by(Chat.created_at)
-        .limit(1)
-    )
-    if chat is None:
-        chat = Chat(
-            mode_id=mode.id,
-            mode_name_snapshot=mode.name,
-            title="Первый запуск",
-            user_id=owner.id,
-        )
-        session.add(chat)
-        await session.flush()
-
-    await session.commit()
-    return SetupFirstChatResponse(mode_id=mode.id, chat_id=chat.id)
-
-
-@app.post("/v1/setup/complete", status_code=204)
-async def setup_complete(
-    device: Device = Depends(current_device),
-    session: AsyncSession = Depends(get_session),
 ) -> None:
-    """Mark the first run as done so the wizard does not reappear."""
-    _ = device
-    app_settings = await session.get(AppSettings, 1)
-    if app_settings is None:
-        app_settings = AppSettings(id=1, first_run_completed=True)
-        session.add(app_settings)
-    else:
-        app_settings.first_run_completed = True
-    await session.commit()
-
-
-@app.post("/v1/setup/provider/check", response_model=ProviderKeyCheckResponse)
-async def setup_provider_check(
-    request: ProviderKeyCheckRequest,
-    settings: Settings = Depends(get_settings),
-) -> ProviderKeyCheckResponse:
-    """Make one real, tiny provider call so the wizard can say it works.
-
-    The candidate key is used for this request only and is never stored.
-    """
-    provider = request.provider
-    field = "openrouter_api_key" if provider == "openrouter" else "deepseek_api_key"
-    model_id = "openrouter:google/gemini-2.5-flash-lite" if provider == "openrouter" else "deepseek:deepseek-flash"
-    candidate = settings.model_copy(
-        update={
-            field: SecretStr(request.api_key),
-            "mock_providers": False,
-        }
-    )
-    router = ProviderRouter(candidate)
-    started = time.monotonic()
-    try:
-        stream = router.stream_answer(
-            model_id,
-            [{"role": "user", "content": "ping"}],
-            thinking=False,
-            reuse_connection=False,
-        )
-        first = await asyncio.wait_for(anext(stream), timeout=20)
-        await stream.aclose()
-    except StopAsyncIteration:
-        return ProviderKeyCheckResponse(
-            ok=False, provider=provider, message="Провайдер вернул пустой ответ."
-        )
-    except (ProviderError, httpx.HTTPError, ValueError) as exc:
-        return ProviderKeyCheckResponse(
-            ok=False,
-            provider=provider,
-            latency_ms=int((time.monotonic() - started) * 1000),
-            message=_provider_error_message(exc),
-        )
-    except asyncio.TimeoutError:
-        return ProviderKeyCheckResponse(
-            ok=False, provider=provider, message="Провайдер не ответил за 20 секунд."
-        )
-    finally:
-        await router.aclose()
-
-    return ProviderKeyCheckResponse(
-        ok=bool(str(first).strip()),
-        provider=provider,
-        latency_ms=int((time.monotonic() - started) * 1000),
-        message="Ключ рабочий." if str(first).strip() else "Провайдер вернул пустой ответ.",
-    )
-
-
-def _provider_error_message(exc: Exception) -> str:
-    # The status may sit on the exception itself or on the cause it wraps.
-    status_code = None
-    for candidate in (exc, getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
-        if candidate is None:
-            continue
-        found = getattr(getattr(candidate, "response", None), "status_code", None)
-        if found is not None:
-            status_code = found
-            break
-    if status_code in {401, 403}:
-        return "Ключ отклонён провайдером (нет доступа)."
-    if status_code == 402:
-        return "На ключе нет средств."
-    if status_code == 429:
-        return "Провайдер ограничил частоту запросов; ключ, скорее всего, рабочий."
-    if isinstance(exc, asyncio.TimeoutError):
-        return "Провайдер не ответил вовремя."
-    return f"Проверка не удалась: {type(exc).__name__}."
-
-
-@app.post("/v1/setup/provider", response_model=ProviderKeySaveResponse)
-async def setup_provider_save(
-    request: ProviderKeySaveRequest,
-    settings: Settings = Depends(get_settings),
-) -> ProviderKeySaveResponse:
-    """Write the key into the env file next to this server.
-
-    The running container keeps the old value until it is restarted, so this
-    reports that honestly instead of pretending the change is live.
-    """
-    _ = settings
-    env_name = _PROVIDER_ENV_KEYS[request.provider]
-    updates = {env_name: request.api_key}
-    # Adding a real key means real answers: leaving mocks on would silently
-    # ignore the key. An explicit request can still override this.
-    if request.mock_providers is None:
-        updates["WRISTMIND_MOCK_PROVIDERS"] = "false"
-    else:
-        updates["WRISTMIND_MOCK_PROVIDERS"] = "true" if request.mock_providers else "false"
-    try:
-        _update_env_file(_ENV_FILE_PATH, updates)
-    except OSError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Не удалось записать {_ENV_FILE_PATH.name}: {exc.strerror or exc}",
-        ) from exc
-
-    restart_supported = Path("/var/run/docker.sock").exists()
-    restarted = False
-    if restart_supported:
-        restarted = await _restart_self_container()
-    if restarted:
-        message = "Ключ сохранён, сервис перезапускается."
-    elif restart_supported:
-        message = "Ключ сохранён; перезапустите API вручную: ./wristmind restart"
-    else:
-        message = "Ключ сохранён; перезапустите API вручную: ./wristmind restart"
-    return ProviderKeySaveResponse(
-        provider=request.provider,
-        env_file=str(_ENV_FILE_PATH),
-        restart_required=not restarted,
-        restart_supported=restart_supported,
-        message=message,
-    )
-
-
-async def _restart_self_container() -> bool:
-    """Ask Docker to restart this API container; never raises."""
-    container_id = ""
-    try:
-        container_id = Path("/proc/self/cgroup").read_text(encoding="utf-8")
-    except OSError:
-        container_id = ""
-    match = _CONTAINER_ID_RE.search(container_id)
-    if match is None:
-        hostname = ""
-        try:
-            hostname = Path("/etc/hostname").read_text(encoding="utf-8").strip()
-        except OSError:
-            hostname = ""
-        if not _CONTAINER_ID_RE.fullmatch(hostname):
-            return False
-        container_id = hostname
-    else:
-        container_id = match.group(1)
-
-    transport = httpx.AsyncHTTPTransport(uds="/var/run/docker.sock")
-    async with httpx.AsyncClient(transport=transport, base_url="http://docker") as client:
-        try:
-            response = await client.post(
-                f"/containers/{container_id}/restart", params={"t": "5"}, timeout=15
-            )
-        except httpx.HTTPError:
-            return False
-    return response.status_code in {204, 304}
+    """Accept a Telegram update quickly; Bot API processing continues in background."""
+    if not bot_is_enabled(settings):
+        raise HTTPException(status_code=404, detail="Telegram bot is disabled")
+    expected = settings.telegram_webhook_secret.get_secret_value() if settings.telegram_webhook_secret else ""
+    if expected and not secret or expected and not secrets.compare_digest(secret, expected):
+        raise HTTPException(status_code=401, detail="Invalid Telegram webhook secret")
+    asyncio.create_task(handle_update(update, settings))
 
 
 @app.get("/v1/dashboard/stats", response_model=DashboardStatsResponse)
@@ -672,6 +365,31 @@ async def dashboard_stats(
     )
 
 
+@app.post("/v1/stt/yandex", response_model=TranscriptionResponse)
+async def transcribe_panel_audio(
+    file: UploadFile = File(...),
+    _: Device = Depends(admin_device),
+    settings: Settings = Depends(get_settings),
+) -> TranscriptionResponse:
+    from .feature_capabilities import require
+    require(settings, 'voice')
+    # Mono signed 16-bit PCM, 16 kHz, at most 30 seconds. Never persist audio.
+    content = await file.read(960_001)
+    await file.close()
+    if len(content) > 960_000:
+        raise HTTPException(status_code=413, detail="Запись должна быть не длиннее 30 секунд")
+    if not content or len(content) % 2:
+        raise HTTPException(status_code=422, detail="Некорректная аудиозапись")
+    started = time.perf_counter()
+    try:
+        text = await ProviderRouter(settings).transcribe_yandex(content)
+    except ProviderError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    if not text:
+        raise HTTPException(status_code=422, detail="Речь не распознана. Попробуйте ещё раз.")
+    return TranscriptionResponse(text=text, duration_ms=round((time.perf_counter() - started) * 1000), provider="yandex")
+
+
 @app.post("/v1/stt", response_model=TranscriptionResponse)
 async def transcribe_audio(
     file: UploadFile = File(...),
@@ -684,6 +402,8 @@ async def transcribe_audio(
         raise HTTPException(status_code=422, detail="Audio file is empty")
     if len(content) > settings.max_upload_bytes:
         raise HTTPException(status_code=413, detail="Audio file is too large")
+    from .feature_capabilities import require
+    require(settings, 'voice')
     media_type = file.content_type or "application/octet-stream"
     suffix = Path(file.filename or "audio.webm").suffix[:12] or ".bin"
     temp_dir = settings.storage_dir / "stt-temp"
@@ -736,11 +456,14 @@ async def enroll_admin(
 @app.post("/v1/devices/pairing-codes", response_model=PairingCodeResponse, status_code=201)
 async def create_pairing_code(
     request: PairingCodeCreate | None = None,
-    device: Device = Depends(admin_device),
+    device: Device = Depends(current_device),
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
 ) -> PairingCodeResponse:
     owner = await owner_for_device(device, session)
+    # Owner watches can issue a code without acquiring other admin permissions.
+    if not device.is_admin and not (device.kind == "WATCH" and owner.role == "ADMIN"):
+        raise HTTPException(status_code=403, detail="Admin device or owner watch required")
     client_request_id = request.client_request_id if request else None
     if client_request_id:
         existing = await session.scalar(
@@ -778,6 +501,12 @@ async def create_pairing_code(
             )
         )
         try:
+            account_events.record_account_event(
+                session,
+                account_events.PAIRING_UPDATED,
+                {},
+                owner_id=owner.id,
+            )
             await session.commit()
             return PairingCodeResponse(code=code, expires_at=expires_at)
         except IntegrityError:
@@ -836,6 +565,12 @@ async def enroll_device(
     token = issue_device_token(device.id)
     device.token_hash = hash_secret(token, settings)
     pairing.used_at = now
+    account_events.record_account_event(
+        session,
+        account_events.DEVICE_UPDATED,
+        {"device_id": device.id},
+        owner_id=owner.id,
+    )
     await session.commit()
     return DeviceTokenResponse(device_id=device.id, token=token, is_admin=False, user_id=owner.id)
 
@@ -880,6 +615,12 @@ async def enroll_admin_by_code(
     token = issue_device_token(device.id)
     device.token_hash = hash_secret(token, settings)
     pairing.used_at = now
+    account_events.record_account_event(
+        session,
+        account_events.DEVICE_UPDATED,
+        {"device_id": device.id},
+        owner_id=owner.id,
+    )
     await session.commit()
     return DeviceTokenResponse(device_id=device.id, token=token, is_admin=True, user_id=owner.id)
 
@@ -902,6 +643,12 @@ async def revoke_current_device(
     current.revoked_at = utcnow()
     current.removed_at = current.revoked_at
     await session.execute(delete(PushRegistration).where(PushRegistration.device_id == current.id))
+    account_events.record_account_event(
+        session,
+        account_events.DEVICE_REMOVED,
+        {"device_id": current.id},
+        owner_id=current.user_id,
+    )
     await session.commit()
 
 
@@ -960,6 +707,12 @@ async def revoke_device(
         raise HTTPException(status_code=404, detail="Device not found")
     device.revoked_at = utcnow()
     device.removed_at = device.revoked_at
+    account_events.record_account_event(
+        session,
+        account_events.DEVICE_REMOVED,
+        {"device_id": device.id},
+        owner_id=device.user_id,
+    )
     await session.commit()
 
 
@@ -977,6 +730,12 @@ async def remove_revoked_device_record(
     if device.revoked_at is None:
         raise HTTPException(status_code=409, detail="Revoke device access before removing it")
     device.removed_at = utcnow()
+    account_events.record_account_event(
+        session,
+        account_events.DEVICE_REMOVED,
+        {"device_id": device.id},
+        owner_id=device.user_id,
+    )
     await session.commit()
 
 
@@ -985,7 +744,8 @@ async def list_models(
     _: Device = Depends(current_device),
     settings: Settings = Depends(get_settings),
 ) -> list[ModelOptionResponse]:
-    return [ModelOptionResponse(**item.model_dump()) for item in settings.allowed_models]
+    names = {p.id: p.label for p in settings.provider_connections if p.id.startswith('p_')}
+    return [ModelOptionResponse(**{**item.model_dump(), 'provider': names.get(item.provider, item.provider)}) for item in settings.allowed_models]
 
 
 async def app_settings(session: AsyncSession, settings: Settings) -> AppSettings:
@@ -1047,10 +807,18 @@ async def update_settings(
         model_id = resolve_model_id(request.default_model_id)
         ensure_model(model_id, settings)
         value.default_model_id = model_id
+        from .selfhost_runtime import read_runtime, write_runtime, refresh_runtime
+        runtime = read_runtime(settings)
+        if 'providers' in runtime:
+            for field in ('default_model_id', 'quick_chat_model_id', 'router_model_id', 'title_model_id'):
+                runtime[field] = model_id
+            write_runtime(settings, runtime)
+            refresh_runtime(settings)
     if request.stream_responses is not None:
         value.stream_responses = request.stream_responses
     if request.retention_days is not None:
         value.retention_days = request.retention_days
+    account_events.record_account_event(session, account_events.SETTINGS_UPDATED, {})
     await session.commit()
     schedule_watch_state_changed(get_settings())
     return GlobalSettingsResponse(
@@ -1113,6 +881,7 @@ async def update_internal_prompt(
         quick_mode = await session.scalar(select(Mode).where(Mode.name == QUICK_CHAT_MODE_NAME))
         if quick_mode is not None:
             quick_mode.system_prompt = value or default
+    account_events.record_account_event(session, account_events.SETTINGS_UPDATED, {"prompt": key})
     await session.commit()
     return PromptRecord(
         key=key, label=PROMPT_LABELS[key], text=value or default,
@@ -1149,6 +918,8 @@ async def create_mode(
     ensure_model(request.response_model_id, settings)
     mode = Mode(**request.model_dump())
     session.add(mode)
+    await session.flush()
+    account_events.record_account_event(session, account_events.MODE_UPDATED, {"mode_id": mode.id})
     await session.commit()
     await session.refresh(mode)
     schedule_watch_state_changed(get_settings())
@@ -1172,6 +943,7 @@ async def update_mode(
     for key, value in values.items():
         setattr(mode, key, value)
     mode.updated_at = utcnow()
+    account_events.record_account_event(session, account_events.MODE_UPDATED, {"mode_id": mode.id})
     await session.commit()
     await session.refresh(mode)
     schedule_watch_state_changed(get_settings())
@@ -1196,6 +968,7 @@ async def delete_mode(
     )
     for source in sources:
         source.deleted_at = utcnow()
+    account_events.record_account_event(session, account_events.MODE_REMOVED, {"mode_id": mode.id})
     await session.commit()
     schedule_watch_state_changed(get_settings())
 
@@ -1317,6 +1090,15 @@ async def commit_new_chat(
     session: AsyncSession,
 ) -> Chat:
     try:
+        # Flush first: `Chat.id` is assigned by a Python-side default during
+        # flush, and the event must name the chat it announces.
+        await session.flush()
+        account_events.record_account_event(
+            session,
+            account_events.CHAT_CREATED,
+            {"chat_id": chat.id},
+            owner_id=user_id,
+        )
         await session.commit()
         await session.refresh(chat)
         return chat
@@ -1339,9 +1121,15 @@ async def update_chat(
     chat = await session.scalar(select(Chat).options(selectinload(Chat.mode)).where(Chat.id == chat_id, Chat.user_id == owner.id))
     if chat is None or chat.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Chat not found")
-    chat.title = request.title.strip()
-    chat.title_generation_state = "manual"
+    if request.title is not None:
+        chat.title = request.title
+        chat.title_generation_state = "manual"
+    if request.pinned is not None:
+        chat.pinned = request.pinned
     chat.updated_at = utcnow()
+    account_events.record_account_event(
+        session, account_events.CHAT_UPDATED, {"chat_id": chat.id}, owner_id=owner.id
+    )
     await session.commit()
     schedule_watch_state_changed(get_settings())
     return chat_response(chat)
@@ -1358,6 +1146,9 @@ async def delete_chat(
     if chat is None or chat.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Chat not found")
     chat.deleted_at = utcnow()
+    account_events.record_account_event(
+        session, account_events.CHAT_DELETED, {"chat_id": chat.id}, owner_id=owner.id
+    )
     await session.commit()
     schedule_watch_state_changed(get_settings())
 
@@ -1447,16 +1238,40 @@ async def list_chat_sources(
         )
     ).all()
 
-    # A page promoted to a Working Source is chat material, so it must not be
-    # listed a second time among the plain web finds.
+    # Select metadata only: full cached documents must not travel with the index.
+    reads = (await session.execute(
+        select(RawWebSource.id, RawWebSource.url, RawWebSource.title,
+               RawWebSource.retrieved_at, func.length(RawWebSource.content).label("character_count"))
+        .where(RawWebSource.chat_id == chat_id, func.length(func.trim(RawWebSource.content)) > 0)
+        .order_by(RawWebSource.retrieved_at)
+    )).all()
+    read_by_url = {row.url: row for row in reads}
     working_urls = {row.origin_url for row in working_rows if row.origin_url}
+    references = []
+    seen_urls = set(working_urls)
+    for row in referenced_rows:
+        if row.url in seen_urls:
+            continue
+        seen_urls.add(row.url)
+        entry = ChatReferencedSourceResponse.model_validate(row)
+        read = read_by_url.get(row.url)
+        if read is not None:
+            entry.read_at = read.retrieved_at
+            entry.character_count = read.character_count
+        references.append(entry)
+    # Reads reached through redirects/direct URLs may have no search result.
+    for row in reads:
+        if row.url in seen_urls:
+            continue
+        seen_urls.add(row.url)
+        references.append(ChatReferencedSourceResponse(
+            id=row.id, title=row.title, url=row.url, snippet="",
+            retrieved_at=row.retrieved_at, message_id=None,
+            read_at=row.retrieved_at, character_count=row.character_count,
+        ))
     return ChatSourcesResponse(
         working=[ChatWorkingSourceResponse.model_validate(row) for row in working_rows],
-        referenced=[
-            ChatReferencedSourceResponse.model_validate(row)
-            for row in referenced_rows
-            if row.url not in working_urls
-        ],
+        referenced=references,
     )
 
 
@@ -1584,6 +1399,15 @@ async def create_message(
     await session.flush()
     session.add(JobEvent(job_id=job.id, event="state", data={"state": "queued"}))
     chat.updated_at = utcnow()
+    account_events.record_account_event(
+        session,
+        account_events.MESSAGE_CREATED,
+        {"chat_id": chat.id, "message_id": user_message.id},
+        owner_id=owner.id,
+    )
+    account_events.record_account_event(
+        session, account_events.CHAT_UPDATED, {"chat_id": chat.id}, owner_id=owner.id
+    )
     await session.commit()
     await session.refresh(job)
     # Diagnostic-only trace. Recording is a local append plus a non-blocking
@@ -1675,6 +1499,15 @@ async def sync_fallback_message(
         chat.title = request.user_text.strip()[:120]
         chat.title_generation_state = "complete"
     chat.updated_at = completed_at
+    account_events.record_account_event(
+        session,
+        account_events.MESSAGE_CREATED,
+        {"chat_id": chat.id, "message_id": user_message.id},
+        owner_id=owner.id,
+    )
+    account_events.record_account_event(
+        session, account_events.CHAT_UPDATED, {"chat_id": chat.id}, owner_id=owner.id
+    )
     await session.commit()
     # Diagnostic-only: one marker that this turn was served by the VPS fallback.
     latency_trace.record(
@@ -1688,6 +1521,7 @@ async def sync_fallback_message(
         response_chars=len(assistant_message.content),
         stage="vps_fallback_sync",
     )
+    latency_trace.schedule_request_summary(request.request_id)
     schedule_watch_state_changed(get_settings())
     return {"status": "synced"}
 
@@ -1700,9 +1534,9 @@ async def record_watch_latency(
     """Diagnostic-only sink for watch-side latency events.
 
     Additive endpoint: it records one safe event (identifiers, timings, sizes)
-    into the latency trace. It never reads or writes pipeline state, always
-    answers 204, and swallows all failures so a watch can fire it without any
-    chance of affecting the answer.
+    into the latency trace and its optional Telegram feed. It never reads or
+    writes pipeline state, always answers 204, and swallows all failures so a
+    watch can fire it without any chance of affecting the answer.
     """
     try:
         event = str(request.get("event") or "")[:64]
@@ -1837,6 +1671,70 @@ async def job_events(
     )
 
 
+@app.get("/v1/events")
+async def account_events_stream(
+    after: int = 0,
+    last_event_id: str | None = Header(None, alias="Last-Event-ID"),
+    device: Device = Depends(current_device),
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    """Live account-level stream for the control panel.
+
+    `after=0` means a client that has just bootstrapped and already holds current
+    state: it starts at the tail, because replaying history would only cause
+    redundant refetches. Any non-zero cursor resumes exactly where it stopped,
+    including the browser's own reconnect through `Last-Event-ID`. A cursor that
+    fell behind the retention window gets one `resync` event instead of a silent
+    gap.
+
+    Identifier-only payloads are deliberate: the reader refetches the slice the
+    event names, so this stream can never serve stale entity bodies as if they
+    were current.
+    """
+    owner = await owner_for_device(device, session)
+    cursor, resynced = await account_events.resolve_cursor(session, after, last_event_id)
+
+    async def stream():
+        nonlocal cursor
+        if resynced:
+            yield f"event: {account_events.RESYNC}\ndata: {{}}\n\n"
+        while True:
+            async with SessionFactory() as session:
+                events = (
+                    await session.scalars(
+                        select(AccountEvent)
+                        .where(
+                            or_(
+                                AccountEvent.owner_id == owner.id,
+                                AccountEvent.owner_id.is_(None),
+                            ),
+                            AccountEvent.id > cursor,
+                        )
+                        .order_by(AccountEvent.id)
+                        .limit(200)
+                    )
+                ).all()
+                for item in events:
+                    cursor = item.id
+                    yield (
+                        f"id: {item.id}\nevent: {item.type}\n"
+                        f"data: {json.dumps(item.data, ensure_ascii=False)}\n\n"
+                    )
+            if not events:
+                yield ": keepalive\n\n"
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @app.get("/v1/knowledge", response_model=list[KnowledgeSourceResponse])
 async def list_knowledge(
     mode_id: str | None = None,
@@ -1897,6 +1795,8 @@ async def save_chat_source_candidate(
         return existing
     if candidate.saved_source_id:
         raise HTTPException(status_code=409, detail="Source is already saved")
+    from .feature_capabilities import require
+    require(settings, 'digitization')
     source_id = str(uuid4())
     target_dir = settings.storage_dir / "sources" / source_id
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -1918,6 +1818,12 @@ async def save_chat_source_candidate(
     session.add(job)
     await session.flush()
     session.add(JobEvent(job_id=job.id, event="state", data={"state": "queued"}))
+    account_events.record_account_event(
+        session,
+        account_events.SOURCE_UPDATED,
+        {"source_id": source.id, "chat_id": None, "mode_id": source.mode_id},
+        owner_id=owner.id,
+    )
     await session.commit()
     await session.refresh(job)
     return job
@@ -1937,6 +1843,12 @@ async def dismiss_chat_source_candidate(
     if candidate is None:
         raise HTTPException(status_code=404, detail="Source suggestion not found")
     candidate.dismissed_at = utcnow()
+    account_events.record_account_event(
+        session,
+        account_events.SOURCE_UPDATED,
+        {"chat_id": chat_id},
+        owner_id=owner.id,
+    )
     await session.commit()
 
 
@@ -2012,6 +1924,11 @@ async def upload_knowledge(
     if mode is None or mode.deleted_at is not None:
         await file.close()
         raise HTTPException(status_code=422, detail="An active mode is required")
+    from .feature_capabilities import require
+    require(settings, 'digitization')
+    if processing_mode == 'VISION' and settings.selfhost_enabled:
+        from .model_capabilities import selected
+        if not selected(settings, 'vision'): raise HTTPException(409, 'Добавьте Vision-модель или выберите OCR')
     filename = Path(file.filename or "source.bin").name
     suffix = Path(filename).suffix.lower()
     if suffix not in {".pdf", ".jpg", ".jpeg", ".png", ".webp"}:
@@ -2055,6 +1972,12 @@ async def upload_knowledge(
     session.add(job)
     await session.flush()
     session.add(JobEvent(job_id=job.id, event="state", data={"state": "queued"}))
+    account_events.record_account_event(
+        session,
+        account_events.SOURCE_UPDATED,
+        {"source_id": source.id, "mode_id": source.mode_id},
+        owner_id=owner.id,
+    )
     await session.commit()
     await session.refresh(job)
     return job
@@ -2104,6 +2027,12 @@ async def reprocess_knowledge(
     session.add(job)
     await session.flush()
     session.add(JobEvent(job_id=job.id, event="state", data={"state": "queued"}))
+    account_events.record_account_event(
+        session,
+        account_events.SOURCE_UPDATED,
+        {"source_id": source.id, "mode_id": source.mode_id},
+        owner_id=owner.id,
+    )
     await session.commit()
     await session.refresh(job)
     return job
@@ -2120,4 +2049,10 @@ async def delete_knowledge(
     if source is None or source.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Knowledge source not found")
     source.deleted_at = utcnow()
+    account_events.record_account_event(
+        session,
+        account_events.SOURCE_REMOVED,
+        {"source_id": source.id, "mode_id": source.mode_id},
+        owner_id=owner.id,
+    )
     await session.commit()

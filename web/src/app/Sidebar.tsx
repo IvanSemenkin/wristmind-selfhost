@@ -1,24 +1,27 @@
 import { Link, NavLink } from '@/app/router';
-import { Moon, Plus, Sun, Watch } from 'lucide-react';
-import { useModes, useServiceHealth, useSettings } from '@/store';
-import { cn } from '@/lib/cn';
-import { useTheme } from '@/app/ThemeProvider';
+import { Plus, Watch } from 'lucide-react';
+import { useServiceHealth, useSettings } from '@/store';
+import { useIsMobile } from '@/lib/hooks';
 import { isNavItemActive, NAV_GROUPS } from '@/app/navigation';
 import { useQuickActions } from '@/app/QuickActions';
 import { IconButton, Tooltip } from '@/components';
-import { ModeDot } from '@/components/Entities';
-import { useLocation } from '@/app/router';
+import { useLocation, useParams } from '@/app/router';
+import { ChatList } from '@/pages/chats/ChatListPane';
 import styles from './AppShell.module.css';
 
 export function Sidebar() {
   const location = useLocation();
-  const { createMode } = useQuickActions();
-  const modes = useModes();
+  const params = useParams<{ chatId?: string }>();
   const settings = useSettings();
   const services = useServiceHealth();
-  const { theme, toggle } = useTheme();
+  const quick = useQuickActions();
+  const isMobile = useIsMobile();
 
   const degraded = services.filter((s) => s.status !== 'operational').length;
+  /* The conversation list belongs to the chat workspace only. On every other
+     page the rail stays a navigation rail. */
+  const onChats = location.pathname === '/chats' || location.pathname.startsWith('/chats/');
+  const showChatList = onChats && !isMobile;
 
   return (
     <aside className={styles.sidebar}>
@@ -32,6 +35,7 @@ export function Sidebar() {
         </span>
       </div>
 
+      <Link to="/talk" className={styles.navItem}><Plus className={styles.navIcon} />Открыть приложение чатов</Link>
       <nav className={styles.nav} aria-label="Основная навигация">
         {NAV_GROUPS.map((group) => (
           <div key={group.id} className={styles.navGroup}>
@@ -58,49 +62,34 @@ export function Sidebar() {
             </ul>
           </div>
         ))}
+      </nav>
 
-        <div className={styles.navGroup}>
+      {/* ChatGPT's information architecture: the conversation list is the
+          rail's own content, not a second column beside it. The per-mode
+          shortcut list that used to live here was removed to make room — modes
+          have their own page, a picker in the new-chat flow, and a colour dot
+          on every chat row. */}
+      {showChatList && (
+        <section className={styles.railChats} aria-label="Чаты">
           <div className={styles.navGroupLabelRow}>
-            <span className={styles.navGroupLabel}>Режимы</span>
-            <Tooltip label="Новый режим">
+            <span className={styles.navGroupLabel}>Чаты</span>
+            <Tooltip label="Новый чат">
               <IconButton
-                size="xs" label="Новый режим" icon={<Plus />}
-                onClick={createMode}
+                size="xs" label="Новый чат" icon={<Plus />}
+                onClick={() => quick.newChat(null)}
                 className={styles.navGroupAction}
               />
             </Tooltip>
           </div>
-          <ul className={styles.modeNavList}>
-            {modes.slice(0, 7).map((mode) => (
-              <li key={mode.id}>
-                <NavLink
-                  to={`/modes/${mode.id}`}
-                  className={styles.modeNavItem}
-                  data-active={location.pathname.startsWith(`/modes/${mode.id}`) || undefined}
-                  data-mode-color={mode.color}
-                  title={mode.description}
-                >
-                  <ModeDot color={mode.color} size="sm" />
-                  <span className={styles.modeNavLabel}>{mode.name}</span>
-                  {!mode.hidden_on_watch && <Watch className={styles.modeNavWatch} />}
-                </NavLink>
-              </li>
-            ))}
-            {modes.length === 0 && <li className={styles.modeNavEmpty}>Пока нет режимов</li>}
-          </ul>
-        </div>
-      </nav>
+          <ChatList variant="rail" activeChatId={params.chatId} />
+        </section>
+      )}
 
+      {/* No theme switch here by the owner's request: the desktop rail is for
+          navigation. The theme is still switchable in Настройки and from the
+          command palette (Ctrl/⌘+K), and the mobile "Ещё" sheet keeps its own
+          control. */}
       <div className={styles.sidebarFooter}>
-        <div className={styles.footerRow}>
-          <Tooltip label={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}>
-            <IconButton
-              size="sm" label={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'}
-              icon={theme === 'dark' ? <Sun /> : <Moon />}
-              onClick={toggle}
-            />
-          </Tooltip>
-        </div>
         {degraded > 0 && (
           <Link to="/devices" className={styles.degradedNotice}>
             {degraded === 1 ? 'Одно устройство требует внимания' : `${degraded} сервиса требуют внимания`}
@@ -108,13 +97,5 @@ export function Sidebar() {
         )}
       </div>
     </aside>
-  );
-}
-
-export function BrandMark({ className }: { className?: string }) {
-  return (
-    <span className={cn(styles.brandMark, className)} aria-hidden>
-      <Watch />
-    </span>
   );
 }

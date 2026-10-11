@@ -23,9 +23,6 @@ export function useMediaQuery(query: string): boolean {
 /** Below the desktop breakpoint the shell switches to mobile navigation. */
 export const useIsMobile = (): boolean => useMediaQuery('(max-width: 860px)');
 
-export const usePrefersReducedMotion = (): boolean =>
-  useMediaQuery('(prefers-reduced-motion: reduce)');
-
 /* -------------------------------------------------------------------------- */
 /* Outside click / escape                                                      */
 /* -------------------------------------------------------------------------- */
@@ -183,31 +180,6 @@ export function useCopyToClipboard(resetAfter = 1600): [boolean, (value: string)
   return [copied, copy];
 }
 
-export function useLocalStorage<T>(key: string, initial: T): [T, (value: T) => void] {
-  const [value, setValue] = useState<T>(() => {
-    try {
-      const raw = window.localStorage.getItem(key);
-      return raw === null ? initial : (JSON.parse(raw) as T);
-    } catch {
-      return initial;
-    }
-  });
-
-  const update = useCallback(
-    (next: T) => {
-      setValue(next);
-      try {
-        window.localStorage.setItem(key, JSON.stringify(next));
-      } catch {
-        /* storage unavailable — keep the in-memory value */
-      }
-    },
-    [key],
-  );
-
-  return [value, update];
-}
-
 /** Ticks on an interval; used by the pairing-code countdown and live metrics. */
 export function useInterval(callback: () => void, delay: number | null): void {
   const saved = useRef(callback);
@@ -218,21 +190,4 @@ export function useInterval(callback: () => void, delay: number | null): void {
     const id = window.setInterval(() => saved.current(), delay);
     return () => window.clearInterval(id);
   }, [delay]);
-}
-
-/** Reports whether an element's content overflows horizontally (mobile audit aid). */
-export function useOverflowCheck<T extends HTMLElement>(ref: React.RefObject<T | null>): boolean {
-  const [overflowing, setOverflowing] = useState(false);
-
-  useEffect(() => {
-    const node = ref.current;
-    if (!node) return;
-    const check = () => setOverflowing(node.scrollWidth > node.clientWidth + 1);
-    check();
-    const observer = new ResizeObserver(check);
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [ref]);
-
-  return overflowing;
 }

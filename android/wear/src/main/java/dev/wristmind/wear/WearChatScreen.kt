@@ -65,6 +65,8 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalScrollCaptureInProgress
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
@@ -106,9 +108,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 
 private object ChatLayout {
     const val messageWidthFraction = .84f
-    val historyVisualSize = 32.dp
-    val historyTouchTargetSize = 40.dp
-    val historyVisualLift = 2.dp
 }
 
 private data class ChatContentMarker(
@@ -152,8 +151,11 @@ internal fun pendingServerUserIndex(
 internal fun ChatScreen(
     state: WearState,
     listState: TransformingLazyColumnState,
+    initiallyPositioned: Boolean = true,
+    onInitiallyPositioned: () -> Unit = {},
     composerHeightPx: Int,
     onComposerHeightChanged: (Int) -> Unit,
+    enlargeEditorTouchTarget: Boolean,
     onHistory: () -> Unit,
     onEditDraft: () -> Unit,
     onCancelAnswer: () -> Unit,
@@ -223,7 +225,13 @@ internal fun ChatScreen(
         streamingAnswerVisible = visibleStreamingAnswer.isNotBlank(),
     )
     var previousContentMarker by remember { mutableStateOf(contentMarker) }
-    LaunchedEffect(contentMarker) {
+    LaunchedEffect(state.activeChatId, state.messagesChatId, contentMarker, initiallyPositioned) {
+        if (!initiallyPositioned && state.activeChatId != null && state.messagesChatId == state.activeChatId && renderedCount > 0) {
+            listState.scrollToItem(renderedCount - 1)
+            previousContentMarker = contentMarker
+            onInitiallyPositioned()
+            return@LaunchedEffect
+        }
         val previous = previousContentMarker
         previousContentMarker = contentMarker
         val newContentAppeared =
@@ -237,10 +245,17 @@ internal fun ChatScreen(
     val layoutDirection = LocalLayoutDirection.current
     val safeDrawingPadding = WindowInsets.safeDrawing.asPaddingValues()
     val composerHeight = with(density) { composerHeightPx.toDp() }
-    BoxWithConstraints(Modifier.fillMaxSize().imePadding()) {
-        // The corner of an axis-aligned rectangle needs extra clearance on a round display.
-        // This is the inset of the largest square that fits fully inside the screen circle.
-        val circularCornerInset = minOf(maxWidth, maxHeight) * 0.1464466f
+    val currentOnHistory by rememberUpdatedState(onHistory)
+    BoxWithConstraints(
+        Modifier.fillMaxSize().imePadding()
+            .chatHistorySwipe { currentOnHistory() }
+            .semantics {
+                customActions = listOf(CustomAccessibilityAction("Открыть историю чатов") {
+                    currentOnHistory()
+                    true
+                })
+            },
+    ) {
         ScreenScaffold(
             scrollState = listState,
             timeText = {},
@@ -272,14 +287,7 @@ internal fun ChatScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
                         start = adaptivePadding.calculateStartPadding(layoutDirection),
-                        // Keep the first message clear of the floating corner action without
-                        // introducing a separate full-width header.
-                        top = maxOf(
-                            adaptivePadding.calculateTopPadding(),
-                            circularCornerInset +
-                                ChatLayout.historyTouchTargetSize +
-                                ButtonDefaults.IconSpacing,
-                        ),
+                        top = adaptivePadding.calculateTopPadding(),
                         end = adaptivePadding.calculateEndPadding(layoutDirection),
                         bottom = maxOf(
                             adaptivePadding.calculateBottomPadding(),
@@ -323,12 +331,6 @@ internal fun ChatScreen(
             if (state.loading && state.activeChatId == null) {
                 CircularProgressIndicator(Modifier.size(32.dp).align(Alignment.Center))
             }
-            ChatTopAction(
-                state = state,
-                onHistory = onHistory,
-                contentPadding = adaptivePadding,
-                circularCornerInset = circularCornerInset,
-            )
         }
         // This layer is deliberately outside ScreenScaffold and TransformingLazyColumn:
         // scrolling messages must never transform, translate, or resize the composer.
@@ -337,6 +339,7 @@ internal fun ChatScreen(
                 state = state,
                 onEditDraft = onEditDraft,
                 onCancelAnswer = onCancelAnswer,
+                enlargeEditorTouchTarget = enlargeEditorTouchTarget,
                 contentPadding = safeDrawingPadding,
                 onHeightChanged = onComposerHeightChanged,
                 modifier = Modifier
@@ -349,76 +352,6 @@ internal fun ChatScreen(
             SourceSavePrompt(
                 onOpen = onOpenSource,
             )
-        }
-    }
-}
-
-@Composable
-private fun ChatTopAction(
-    state: WearState,
-    onHistory: () -> Unit,
-    contentPadding: PaddingValues,
-    circularCornerInset: androidx.compose.ui.unit.Dp,
-) {
-    val layoutDirection = LocalLayoutDirection.current
-    val topPadding = maxOf(
-        contentPadding.calculateTopPadding(),
-        circularCornerInset,
-    )
-    val startPadding = maxOf(
-        contentPadding.calculateStartPadding(layoutDirection),
-        circularCornerInset,
-    )
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .padding(start = startPadding, top = topPadding),
-        contentAlignment = Alignment.TopStart,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(ChatLayout.historyTouchTargetSize)
-                .clickable(onClick = onHistory)
-                .semantics {
-                    contentDescription = "История и новый чат"
-                if (state.stage == ProcessingStage.ERROR || state.error != null) {
-                    stateDescription = "Ошибка"
-                }
-            },
-            contentAlignment = Alignment.Center,
-        ) {
-            // The visual surface is small, while the 40 dp target stays practical without
-            // reserving the oversized default icon-button area.
-            Box(
-                modifier = Modifier
-                    .size(ChatLayout.historyVisualSize)
-                    .offset(y = -ChatLayout.historyVisualLift)
-                    .background(
-                        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = .75f),
-                        RoundedCornerShape(
-                            topStart = 8.dp,
-                            topEnd = 16.dp,
-                            bottomEnd = 16.dp,
-                            bottomStart = 16.dp,
-                        ),
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = WearIcons.History,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
-                )
-                if (state.stage == ProcessingStage.ERROR || state.error != null) {
-                    Box(
-                        Modifier
-                            .align(Alignment.TopEnd)
-                            .size(7.dp)
-                            .background(MaterialTheme.colorScheme.error, CircleShape),
-                    )
-                }
-            }
         }
     }
 }
@@ -439,7 +372,7 @@ private fun EmptyChat() {
         Spacer(Modifier.height(8.dp))
         Text("Чатов пока нет", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Откройте историю и создайте чат",
+            "Смахните влево, чтобы открыть чаты",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,
@@ -490,6 +423,7 @@ private fun ChatControls(
     state: WearState,
     onEditDraft: () -> Unit,
     onCancelAnswer: () -> Unit,
+    enlargeEditorTouchTarget: Boolean,
     contentPadding: PaddingValues,
     onHeightChanged: (Int) -> Unit,
     modifier: Modifier = Modifier,
@@ -503,7 +437,38 @@ private fun ChatControls(
             .padding(bottom = contentPadding.calculateBottomPadding()),
         contentAlignment = Alignment.BottomCenter,
     ) {
-        FilledTonalIconButton(
+        if (enlargeEditorTouchTarget && !processing) {
+            // Keep the 28 dp visual control at the same bottom position. Only its
+            // hit area grows upward and sideways after returning from the reader.
+            Box(
+                modifier = Modifier
+                    .size(60.dp)
+                    .clickable(onClickLabel = "Написать сообщение", role = Role.Button, onClick = onEditDraft)
+                    .semantics {
+                        if (state.stage == ProcessingStage.ERROR || state.error != null) stateDescription = "Ошибка"
+                    },
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .padding(bottom = 10.dp)
+                        .size(28.dp)
+                        .background(MaterialTheme.colorScheme.secondaryContainer, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        WearIcons.Chat,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    if (state.stage == ProcessingStage.ERROR || state.error != null) {
+                        Box(Modifier.align(Alignment.TopEnd).size(5.dp)
+                            .background(MaterialTheme.colorScheme.error, CircleShape))
+                    }
+                }
+            }
+        } else FilledTonalIconButton(
             onClick = {
                 if (processing) {
                     val now = SystemClock.elapsedRealtime()
@@ -513,13 +478,21 @@ private fun ChatControls(
                     } else lastStopTapAt = now
                 } else onEditDraft()
             },
-            modifier = Modifier.touchTargetAwareSize(28.dp),
+            modifier = Modifier.touchTargetAwareSize(28.dp).semantics {
+                if (state.stage == ProcessingStage.ERROR || state.error != null) stateDescription = "Ошибка"
+            },
         ) {
-            Icon(
-                if (processing) WearIcons.Stop else WearIcons.Chat,
-                contentDescription = if (processing) "Дважды нажмите, чтобы остановить ответ" else "Написать сообщение",
-                modifier = Modifier.size(16.dp),
-            )
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    if (processing) WearIcons.Stop else WearIcons.Chat,
+                    contentDescription = if (processing) "Дважды нажмите, чтобы остановить ответ" else "Написать сообщение",
+                    modifier = Modifier.size(16.dp),
+                )
+                if (state.stage == ProcessingStage.ERROR || state.error != null) {
+                    Box(Modifier.align(Alignment.TopEnd).size(5.dp)
+                        .background(MaterialTheme.colorScheme.error, CircleShape))
+                }
+            }
         }
     }
 }
@@ -1059,6 +1032,7 @@ private fun ChatScreenPreviewContent(draft: String) {
                 listState = listState,
                 composerHeightPx = composerHeightPx,
                 onComposerHeightChanged = { composerHeightPx = it },
+                enlargeEditorTouchTarget = true,
                 onHistory = {},
                 onEditDraft = {},
                 onCancelAnswer = {},

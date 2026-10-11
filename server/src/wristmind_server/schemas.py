@@ -141,6 +141,7 @@ class ModeCreate(BaseModel):
     description: str = Field(default="", max_length=500)
     color: str = Field(default="#65F5C2", pattern=r"^#[0-9A-Fa-f]{6}$")
     icon: str = Field(default="spark", max_length=40)
+    telegram_emoji_id: str | None = Field(default=None, max_length=80)
     system_prompt: str = Field(default="", max_length=20_000)
     response_model_id: str = Field(max_length=160)
     hidden_on_watch: bool = False
@@ -151,6 +152,7 @@ class ModeUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=500)
     color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     icon: str | None = Field(default=None, max_length=40)
+    telegram_emoji_id: str | None = Field(default=None, max_length=80)
     system_prompt: str | None = Field(default=None, max_length=20_000)
     response_model_id: str | None = Field(default=None, max_length=160)
     hidden_on_watch: bool = False
@@ -162,6 +164,7 @@ class ModeResponse(ApiModel):
     description: str
     color: str
     icon: str
+    telegram_emoji_id: str | None
     system_prompt: str
     response_model_id: str
     hidden_on_watch: bool
@@ -187,10 +190,22 @@ class QuickChatCreate(BaseModel):
 
 
 class ChatUpdate(BaseModel):
-    title: str = Field(min_length=1, max_length=120)
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    pinned: bool | None = None
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Chat title must not be blank")
+        return value
 
 
 class ChatResponse(BaseModel):
+    pinned: bool = False
     id: str
     mode_id: str
     mode_name: str
@@ -257,6 +272,9 @@ class ChatReferencedSourceResponse(ApiModel):
     snippet: str
     retrieved_at: datetime
     message_id: str | None
+    # A successful text read, not a search snippet or a model claim.
+    read_at: datetime | None = None
+    character_count: int = 0
 
 
 class ChatSourcesResponse(ApiModel):
@@ -351,56 +369,3 @@ class KnowledgeSourceDetailResponse(KnowledgeSourceResponse):
 
 class KnowledgeReprocessRequest(BaseModel):
     client_request_id: str = Field(min_length=1, max_length=100)
-
-
-class SetupStatusResponse(BaseModel):
-    """What a first-run wizard can honestly say about this installation.
-
-    Deliberately unauthenticated and secret-free: it reports booleans and
-    counts, never keys, addresses or tokens.
-    """
-
-    first_run_completed: bool
-    instance_claimed: bool
-    admin_devices: int
-    active_modes: int
-    knowledge_sources: int
-    database_ok: bool
-    provider_mode: str
-    provider_ready: bool
-    providers_with_keys: list[str]
-    setup_required: bool
-    first_mode_id: str | None = None
-
-
-class ProviderKeyCheckRequest(BaseModel):
-    provider: str = Field(pattern="^(openrouter|deepseek)$")
-    api_key: str = Field(min_length=8, max_length=400)
-
-
-class ProviderKeyCheckResponse(BaseModel):
-    ok: bool
-    provider: str
-    latency_ms: int | None = None
-    message: str
-
-
-class ProviderKeySaveRequest(BaseModel):
-    provider: str = Field(pattern="^(openrouter|deepseek)$")
-    api_key: str = Field(min_length=8, max_length=400)
-    mock_providers: bool | None = None
-
-
-class ProviderKeySaveResponse(BaseModel):
-    provider: str
-    env_file: str
-    restart_required: bool
-    restart_supported: bool
-    message: str
-
-
-class SetupFirstChatResponse(BaseModel):
-    """The mode and chat the wizard created, so the panel can open them."""
-
-    mode_id: str
-    chat_id: str

@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import Settings, get_settings
 from .database import get_session
-from .db_models import Device
+from .db_models import Device, SelfHostWebSession
 
 
 def hash_secret(value: str, settings: Settings) -> str:
@@ -58,12 +58,26 @@ async def current_device(
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
 ) -> Device:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Device token required")
-    raw = authorization.removeprefix("Bearer ").strip()
+    raw = authorization.removeprefix("Bearer ").strip() if authorization and authorization.startswith("Bearer ") else ""
+    cookie_auth = False
+    if not raw and settings.selfhost_enabled:
+        raw = request.cookies.get("wm_session", "")
+        cookie_auth = bool(raw)
+    if not raw:
+        raise HTTPException(status_code=401, detail="Device token required")
     device = await session.scalar(select(Device).where(Device.token_hash == hash_secret(raw, settings)))
     if not device or device.revoked_at is not None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid device token")
+        raise HTTPException(status_code=401, detail="Invalid device token")
+    if settings.selfhost_enabled:
+        web = await session.get(SelfHostWebSession, device.id)
+        if web:
+            expiration = web.expires_at.replace(tzinfo=timezone.utc) if web.expires_at.tzinfo is None else web.expires_at
+            if expiration <= datetime.now(timezone.utc):
+                raise HTTPException(status_code=401, detail="Invalid device token")
+        elif cookie_auth:
+            raise HTTPException(status_code=401, detail="Invalid device token")
+    if cookie_auth and request.method not in {"GET", "HEAD", "OPTIONS"} and request.headers.get("x-wristmind-csrf") != "1":
+        raise HTTPException(status_code=403, detail="Проверка запроса не пройдена")
     device.last_seen_at = datetime.now(timezone.utc)
     address = client_ip(request)
     if address:

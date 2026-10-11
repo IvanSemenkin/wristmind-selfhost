@@ -1,39 +1,31 @@
+import { useChatBase } from './useChatBase';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from '@/app/router';
 import {
   ArrowDown,
   ArrowLeft,
+  PanelLeft,
+  MessageSquarePlus,
   BookOpen,
   Clock,
-  ExternalLink,
   Layers,
-  MoreHorizontal,
-  Pencil,
-  Telescope,
-  Trash2,
-  Wand2,
+  Watch,
 } from 'lucide-react';
 import { useActions } from '@/services';
-import { useChat, useChatMessages, useModes, useModels, useSources } from '@/store';
-import { isMessagePhase, type ChatSources, type Message, type MessagePhase } from '@/types';
+import { useChat, useChatMessages, useModes, useModels, useSettings, useSources } from '@/store';
+import { isMessagePhase, type ChatSources, type Message } from '@/types';
 import { formatDuration, formatTime } from '@/lib/format';
-import { chatSourceCards, messageSourceCards, type ChatSourceFilter } from '@/lib/chatSources';
+import { chatSourceCards, chatSourcesRevision, messageSourceCards, type ChatSourceFilter } from '@/lib/chatSources';
 import {
   Button,
   EmptyState,
-  IconButton,
-  Menu,
   Tooltip,
   useToast,
 } from '@/components';
-import { ModeBadge, QuickChatBadge } from '@/components/Entities';
-import { useQuickActions } from '@/app/QuickActions';
+import { ModeDot } from '@/components/Entities';
 import { ChatSourcesPanel } from './ChatSourcesPanel';
 import { Composer } from './Composer';
-import { MessageDiagnostics } from './MessageDiagnostics';
 import { MessageSources } from './MessageSources';
-import { ProcessingTimeline, StageInlineLabel } from './ProcessingTimeline';
-import { RenameChatDialog } from './RenameChatDialog';
 import { RichText } from './RichText';
 import { useChatSources } from './useChatSources';
 import styles from './Chats.module.css';
@@ -56,44 +48,40 @@ function MessageBlock({
   onOpenSources: (messageId: string) => void;
 }) {
   const models = useModels();
+  const developerMode = useSettings()?.developer_mode === true;
   const model = models.find((m) => m.id === message.model_id);
   const streaming = isMessagePhase(message.status);
-  const phase: MessagePhase | null = streaming ? (message.status as MessagePhase) : null;
-  // The pipeline is reported by the backend; fall back to what the options imply.
-  const phases: MessagePhase[] =
-    message.phases.length > 0
-      ? message.phases
-      : streaming
-        ? [message.status as MessagePhase]
-        : ['queued', 'context', 'generating'];
+
 
   if (message.role === 'user') {
     return (
       <article className={styles.message} data-role="user">
         <div className={styles.userBubble}>{message.content}</div>
-        <div className={styles.messageMeta} data-align="end">
+        {developerMode && <div className={styles.messageMeta} data-align="end">
           <span>{formatTime(message.created_at)}</span>
-        </div>
+        </div>}
       </article>
     );
   }
 
-  // Before any text arrives the answer is still being assembled, so the
-  // timeline is the only meaningful content.
-  const showTimeline = streaming && message.content.length === 0;
+  const waitingForText = streaming && message.content.length === 0;
+  const pendingLabel = ['search_query', 'searching', 'reviewing_sources', 'opening_source'].includes(message.status) ? 'Ищу информацию' : 'Думаю';
 
   return (
     <article className={styles.message} data-role="assistant">
       <div className={styles.assistantHead}>
         <span className={styles.assistantAvatar} aria-hidden>
-          <Wand2 />
+          <Watch />
         </span>
-        <div className={styles.assistantMeta}>
-          <span className={styles.assistantName}>WristMind</span>
-          {model && <span className={styles.assistantModel}>{model.name}</span>}
-        </div>
-        {streaming && <StageInlineLabel phase={phase} />}
-        {!streaming && message.timings?.total_ms != null && (
+        {/* No per-message model name: ChatGPT marks an assistant turn with its
+            mark alone, and repeating the product name above every answer is
+            noise. The developer-mode model chip stays available. */}
+        {developerMode && model && (
+          <div className={styles.assistantMeta}>
+            <span className={styles.assistantModel}>{model.name}</span>
+          </div>
+        )}
+        {developerMode && !streaming && message.timings?.total_ms != null && (
           <Tooltip label="Время обработки запроса">
             <span className={styles.duration}>
               <Clock />
@@ -104,18 +92,17 @@ function MessageBlock({
       </div>
 
       <div className={styles.assistantBody}>
-        {showTimeline ? (
-          <ProcessingTimeline current={phase} phases={phases} />
+        {waitingForText ? (
+          <div className={styles.thinkingStatus} role="status" aria-label={`${pendingLabel}…`}>{pendingLabel}<span className={styles.streamingDots} aria-hidden><span/><span/><span/></span></div>
         ) : (
           <>
-            <RichText content={message.content} />
-            {streaming && <span className={styles.caret} aria-hidden />}
+            <RichText content={message.content} streaming={streaming} />
+            {streaming && <span className={styles.streamingDots} role="status" aria-label="Ответ поступает"><span aria-hidden /><span aria-hidden /><span aria-hidden /></span>}
           </>
         )}
         {!streaming && message.status === 'complete' && (
           <MessageSources message={message} chatSources={chatSources} onOpen={onOpenSources} />
         )}
-        {!streaming && <MessageDiagnostics message={message} />}
         {message.status === 'cancelled' && (
           <div className={styles.messageMeta}>
             <span>Генерация остановлена</span>
@@ -135,41 +122,33 @@ function MessageBlock({
 /* Conversation                                                               */
 /* -------------------------------------------------------------------------- */
 
-const SUGGESTIONS_WITH_KB = [
-  'Что написано в базе знаний по этому режиму?',
-  'Перечисли ключевые пункты из самого свежего источника',
-  'Есть ли в источниках противоречия?',
-];
-
-const SUGGESTIONS_QUICK = [
-  'Помоги спланировать неделю: три главные задачи',
-  'Объясни простыми словами, как работает RAG',
-  'Составь чек-лист для первой недели на новом проекте',
-];
-
-export function Conversation({ chatId }: { chatId: string }) {
+export function Conversation({ chatId, onExternalStop, recoveryText, onOpenHistory }: { chatId: string; onExternalStop?: () => void; recoveryText?: string; onOpenHistory?: () => void }) {
+  const base = useChatBase();
   const chat = useChat(chatId);
   const messages = useChatMessages(chatId);
   const modes = useModes();
-  const sources = useSources();
   const actions = useActions();
   const toast = useToast();
-  const quick = useQuickActions();
   const navigate = useNavigate();
 
   const mode = modes.find((m) => m.id === chat?.mode_id);
-  const readySources = sources.filter((s) => s.mode_id === chat?.mode_id && s.status === 'ready');
 
   // The server always uses the current chat's available context. These switches
   // control only the optional public-web paths.
   const [researchMode, setResearchMode] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [pinnedToBottom, setPinnedToBottom] = useState(true);
-  const [renaming, setRenaming] = useState(false);
 
-  // Chat-scoped sources. Re-fetched when the message count changes so a new
-  // answer's Working Sources appear without a manual reload.
-  const chatSourcesState = useChatSources(chat ? chatId : undefined, messages.length);
+  // Finalising an existing assistant message does not change the count.
+  // Also follow the shared source feed for later indexing/removal updates.
+  // Streamed text is excluded so we never refetch on every token.
+  const liveSources = useSources();
+  const messageSourcesRevision = chatSourcesRevision(messages);
+  const sourceRevision = useMemo(
+    () => ({ messages: messageSourcesRevision, sources: liveSources }),
+    [messageSourcesRevision, liveSources],
+  );
+  const chatSourcesState = useChatSources(chat ? chatId : undefined, sourceRevision);
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [sourcesMessageId, setSourcesMessageId] = useState<string | null>(null);
   const [sourceFilter, setSourceFilter] = useState<ChatSourceFilter>('all');
@@ -246,7 +225,8 @@ export function Conversation({ chatId }: { chatId: string }) {
           signal: controller.signal,
         });
       } catch {
-        toast.error('Не удалось получить ответ', 'Попробуйте отправить сообщение ещё раз');
+        toast.error('Не удалось получить ответ', 'Черновик сохранён. Попробуйте отправить сообщение ещё раз');
+        return false;
       } finally {
         if (abortRef.current === controller) abortRef.current = null;
         setStreaming(false);
@@ -261,29 +241,13 @@ export function Conversation({ chatId }: { chatId: string }) {
     setPinnedToBottom(node.scrollHeight - node.scrollTop - node.clientHeight < 80);
   };
 
-  const handleDelete = async () => {
-    if (!chat) return;
-    try {
-      await actions.deleteChat(chat.id);
-      toast.success('Чат удалён', chat.title);
-      navigate('/chats');
-    } catch {
-      toast.error('Не удалось удалить чат');
-    }
-  };
-
-  const suggestions = useMemo(
-    () => (chat?.mode_id ? SUGGESTIONS_WITH_KB : SUGGESTIONS_QUICK),
-    [chat?.mode_id],
-  );
-
   if (!chat) {
     return (
       <section className={styles.conversation}>
         <EmptyState
           icon={<BookOpen />}
           title="Чат не найден" description="Возможно, он был удалён. Выберите другой диалог в списке." action={
-            <Button variant="secondary" onClick={() => navigate('/chats')}>
+            <Button variant="secondary" onClick={() => navigate(base)}>
               К списку чатов
             </Button>
           }
@@ -296,130 +260,44 @@ export function Conversation({ chatId }: { chatId: string }) {
     <section className={styles.conversation} aria-label="Диалог">
       <header className={styles.convHeader}>
         <div className={styles.convHeaderLeft}>
-          <Link to="/chats" className={styles.backButton} aria-label="К списку чатов">
+          {onOpenHistory ? <button type="button" className={styles.backButton} onClick={onOpenHistory} aria-label="История чатов"><PanelLeft aria-hidden /></button> : <Link to={base === '/talk' ? '/talk/history' : base} className={styles.backButton} aria-label="К списку чатов">
             <ArrowLeft />
-          </Link>
+          </Link>}
           <div className={styles.convTitleBlock}>
-            <h2 className={styles.convTitle}>{chat.title}</h2>
-            <div className={styles.convSubtitle}>
-              {mode ? (
-                <ModeBadge
-                  modeId={mode.id}
-                  color={mode.color}
-                  icon={mode.icon}
-                  name={mode.name}
-                  size="sm"
-                />
-              ) : (
-                <QuickChatBadge size="sm" />
-              )}
-            </div>
+            {/* The open conversation is the page heading: on desktop the chat
+                list now lives in the rail, so the list's own `h1` exists only
+                on the mobile list screen. */}
+            <ModeDot color={mode?.color} size="md" />
+            <h1 className={styles.convTitle} title={chat.title}>{chat.title}</h1>
           </div>
         </div>
 
         <div className={styles.convHeaderActions}>
+          {base === '/talk' && <Link to="/talk" className={styles.newConversationButton} aria-label="Новый чат" title="Новый чат"><MessageSquarePlus aria-hidden /></Link>}
           {chatSourceList.length > 0 && (
             <button
               type="button" className={styles.chatSourcesButton}
               onClick={openChatSources}
+              aria-label={`Источники чата: ${chatSourceList.length}`}
+              title="Источники чата"
               aria-haspopup="dialog"
               aria-expanded={sourcesOpen}
             >
               <Layers aria-hidden />
-              <span>Источники</span>
-              <span className={styles.chatSourcesCount}>· {chatSourceList.length}</span>
+              <span className={styles.chatSourcesCount}>{chatSourceList.length}</span>
             </button>
           )}
-          <Menu
-            align="end" width={230}
-            entries={[
-              {
-                type: 'item' as const,
-                id: 'rename',
-                label: 'Переименовать',
-                icon: <Pencil />,
-                onSelect: () => setRenaming(true),
-              },
-              ...(mode
-                ? [
-                    {
-                      type: 'item' as const,
-                      id: 'mode',
-                      label: 'Открыть режим',
-                      description: mode.name,
-                      icon: <ExternalLink />,
-                      onSelect: () => navigate(`/modes/${mode.id}`),
-                    },
-                    {
-                      type: 'item' as const,
-                      id: 'kb',
-                      label: 'База знаний режима',
-                      icon: <BookOpen />,
-                      onSelect: () => navigate(`/modes/${mode.id}?tab=knowledge`),
-                    },
-                  ]
-                : []),
-              { type: 'separator' as const },
-              {
-                type: 'item',
-                id: 'delete',
-                label: 'Удалить чат',
-                icon: <Trash2 />,
-                danger: true,
-                onSelect: handleDelete,
-              },
-            ]}
-            trigger={<IconButton size="sm" label="Действия с чатом" icon={<MoreHorizontal />} />}
-          />
+
         </div>
       </header>
 
       <div className={styles.messagesScroll} ref={scrollRef} onScroll={handleScroll}>
         <div className={styles.messagesInner}>
           {messages.length === 0 ? (
-            <div className={styles.emptyChat}>
-              <EmptyState
-                icon={mode ? <BookOpen /> : <Wand2 />}
-                title={mode ? `Режим «${mode.name}»` : 'Быстрый чат'}
-                description={
-                  mode
-                    ? mode.description ||
-                      'Задайте вопрос — ответ будет основан на документах режима со ссылками на страницы.'
-                    : 'Универсальный чат без базы знаний. Подходит для разовых вопросов и черновиков.'
-                }
-              />
-              {mode && readySources.length === 0 && (
-                <div className={styles.emptyWarning}>
-                  <span>В базе знаний режима нет готовых источников — ответы будут без ссылок.</span>
-                  <Button
-                    size="sm" variant="secondary" iconLeft={<BookOpen />}
-                    onClick={() => quick.uploadSource(mode.id)}
-                  >
-                    Загрузить
-                  </Button>
-                </div>
-              )}
-              <div className={styles.suggestions}>
-                <div className={styles.suggestionsLabel}>Попробуйте спросить</div>
-                {suggestions.map((suggestion) => (
-                  <button
-                    key={suggestion}
-                    type="button" className={styles.suggestion}
-                    onClick={() => void send(suggestion)}
-                  >
-                    {suggestion}
-                  </button>
-                ))}
-              </div>
-              <div className={styles.emptyOptions}>
-                <span className={styles.emptyOptionsLabel}>Опции запроса</span>
-                <div className={styles.emptyOptionsList}>
-                  <span data-on={researchMode || undefined}>
-                    <Telescope /> {researchMode ? 'Исследование' : 'Авто'}
-                  </span>
-                </div>
-              </div>
-            </div>
+            /* A new chat is a blank page: nothing above the composer. The mode
+               lives in the header, the request mode lives in the composer, and
+               suggestions were noise on a phone screen. */
+            null
           ) : (
             messages.map((message) => (
               <MessageBlock
@@ -435,21 +313,24 @@ export function Conversation({ chatId }: { chatId: string }) {
         {!pinnedToBottom && messages.length > 0 && (
           <button
             type="button" className={styles.scrollDown}
+            aria-label="К последнему сообщению" title="К последнему сообщению"
             onClick={() => {
               const node = scrollRef.current;
               if (node) node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' });
               setPinnedToBottom(true);
             }}
           >
-            <ArrowDown /> К последнему сообщению
+            <ArrowDown aria-hidden="true" />
           </button>
         )}
       </div>
 
       <Composer
+        recoveryText={recoveryText}
+        draftKey={chatId}
         onSend={send}
-        onStop={() => abortRef.current?.abort()}
-        streaming={streaming}
+        onStop={() => { abortRef.current?.abort(); onExternalStop?.(); }}
+        streaming={streaming || Boolean(lastMessage && isMessagePhase(lastMessage.status))}
         researchMode={researchMode}
         onResearchModeToggle={setResearchMode}
         autoFocus={messages.length === 0}
@@ -461,8 +342,6 @@ export function Conversation({ chatId }: { chatId: string }) {
           <span className={styles.streamingBarInner} />
         </div>
       )}
-
-      <RenameChatDialog chat={renaming ? chat : null} onClose={() => setRenaming(false)} />
 
       <ChatSourcesPanel
         key={chatId}

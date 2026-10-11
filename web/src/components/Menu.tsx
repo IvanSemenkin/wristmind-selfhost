@@ -49,6 +49,7 @@ export interface MenuProps {
   /** A single interactive element. It receives the click handler and ref. */
   trigger: ReactElement<{
     onClick?: (event: React.MouseEvent) => void;
+    onKeyDown?: (event: React.KeyboardEvent) => void;
     ref?: React.Ref<HTMLElement>;
     'aria-expanded'?: boolean;
     'aria-haspopup'?: string;
@@ -59,6 +60,7 @@ export interface MenuProps {
   /** Fixed width; omit to size to content. Either way it is clamped on screen. */
   width?: number;
   header?: ReactNode;
+  variant?: 'menu' | 'select';
   /** Controlled open state, for menus driven from other UI (e.g. context menus). */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -78,6 +80,7 @@ export function Menu({
   side = 'bottom',
   width,
   header,
+  variant = 'menu',
   open: controlledOpen,
   onOpenChange,
 }: MenuProps) {
@@ -208,7 +211,9 @@ export function Menu({
       const menu = menuRef.current;
       if (!menu) return;
       if (!menu.contains(document.activeElement) || document.activeElement === menu) {
-        focusItem('first');
+        const selected = menu.querySelector<HTMLButtonElement>('[aria-checked="true"]:not([disabled])');
+        if (selected) selected.focus();
+        else focusItem('first');
       }
     });
     return () => cancelAnimationFrame(raf);
@@ -218,7 +223,7 @@ export function Menu({
     ? cloneElement(trigger, {
         ref: (node: HTMLElement | null) => {
           triggerRef.current = node;
-          const original = (trigger as { ref?: React.Ref<HTMLElement> }).ref;
+          const original = trigger.props.ref;
           if (typeof original === 'function') original(node);
           else if (original && typeof original === 'object') {
             (original as React.MutableRefObject<HTMLElement | null>).current = node;
@@ -228,6 +233,13 @@ export function Menu({
           trigger.props.onClick?.(event);
           if (event.defaultPrevented) return;
           setOpen(!open);
+        },
+        onKeyDown: (event: React.KeyboardEvent) => {
+          trigger.props.onKeyDown?.(event);
+          if (!event.defaultPrevented && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+            event.preventDefault();
+            setOpen(true);
+          }
         },
         'aria-expanded': open,
         'aria-haspopup': 'menu',
@@ -242,7 +254,7 @@ export function Menu({
           <div
             ref={setMenuElement}
             role="menu"
-            aria-orientation="vertical" className={styles.menu}
+            aria-orientation="vertical" className={styles.menu} data-variant={variant}
             style={{
               top: layout?.top ?? -9999,
               left: layout?.left ?? -9999,
@@ -286,7 +298,9 @@ export function Menu({
                 return (
                   <button
                     key={entry.id}
-                    type="button" role="menuitem"
+                    type="button" role={entry.checked === undefined ? "menuitem" : "menuitemradio"}
+                    aria-checked={entry.checked}
+                    data-selected={entry.checked || undefined}
                     data-menu-item
                     disabled={entry.disabled}
                     data-danger={entry.danger || undefined}
@@ -294,6 +308,7 @@ export function Menu({
                     onClick={() => {
                       setOpen(false);
                       entry.onSelect();
+                      triggerRef.current?.focus();
                     }}
                   >
                     <span className={styles.itemIcon}>{entry.checked ? <Check /> : entry.icon}</span>

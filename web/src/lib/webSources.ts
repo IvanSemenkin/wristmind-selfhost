@@ -4,7 +4,7 @@ import type { MessageWebSource } from '@/types';
    Web-source presentation helpers.
 
    These are pure, UI-free functions so the API mapper and the sources panel can
-   share one definition of "domain", "displayable title" and how the legacy
+   share one definition of "domain" and how the legacy
    Markdown block is recognised.
    ========================================================================== */
 
@@ -36,13 +36,6 @@ export function domainFromUrl(url: string): string {
   } catch {
     return '';
   }
-}
-
-/** Title shown on a card; falls back to the domain (never a full raw URL). */
-export function webSourceTitle(source: Pick<MessageWebSource, 'title' | 'url'>): string {
-  const title = source.title?.trim();
-  if (title) return title;
-  return domainFromUrl(source.url) || source.url;
 }
 
 /**

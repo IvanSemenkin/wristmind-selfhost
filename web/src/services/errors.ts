@@ -38,14 +38,6 @@ export class WristMindError extends Error {
   }
 }
 
-export function isAbortError(error: unknown): boolean {
-  return (
-    error instanceof WristMindError
-      ? error.code === 'aborted'
-      : error instanceof DOMException && error.name === 'AbortError'
-  );
-}
-
 /** Turns any thrown value into a message safe to render in a toast. */
 export function describeError(error: unknown, fallback = 'Не удалось выполнить запрос'): string {
   if (error instanceof WristMindError && error.message) return error.message;

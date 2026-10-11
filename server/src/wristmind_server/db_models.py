@@ -82,10 +82,6 @@ class AppSettings(Base):
     source_intent_prompt: Mapped[str] = mapped_column(Text, default=DEFAULT_SOURCE_INTENT_PROMPT)
     source_candidate_prompt: Mapped[str] = mapped_column(Text, default=DEFAULT_SOURCE_CANDIDATE_PROMPT)
     developer_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
-    # Set by the first-run wizard so it stops appearing on every panel open.
-    first_run_completed: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="false"
-    )
     history_message_limit: Mapped[int] = mapped_column(Integer, default=12)
     default_model_id: Mapped[str] = mapped_column(String(160), default="openrouter:google/gemini-2.5-flash-lite")
     stream_responses: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -109,6 +105,8 @@ class Mode(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     color: Mapped[str] = mapped_column(String(16), default="#65F5C2")
     icon: Mapped[str] = mapped_column(String(40), default="spark")
+    # Telegram custom emoji are opaque IDs. Keep `icon` for the web and Wear UI.
+    telegram_emoji_id: Mapped[str | None] = mapped_column(String(80))
     system_prompt: Mapped[str] = mapped_column(Text, default="")
     response_model_id: Mapped[str] = mapped_column(String(160))
     hidden_on_watch: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
@@ -139,6 +137,7 @@ class Chat(Base):
     client_request_id: Mapped[str | None] = mapped_column(String(100))
     mode_name_snapshot: Mapped[str] = mapped_column(String(80))
     title: Mapped[str] = mapped_column(String(120), default="Новый чат")
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
     # `idle` → `queued` → `complete` is deliberately durable: a title is generated
     # at most once and a manual rename can always stop a queued generation.
     title_generation_state: Mapped[str] = mapped_column(String(20), default="idle")
@@ -167,6 +166,39 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     chat: Mapped[Chat] = relationship(back_populates="messages")
+
+
+class TelegramAccount(Base):
+    """One approved Telegram private chat attached to one WristMind user."""
+
+    __tablename__ = "telegram_accounts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    telegram_user_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    chat_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"), unique=True, index=True)
+    selected_mode_id: Mapped[str | None] = mapped_column(ForeignKey("modes.id"))
+    active_chat_id: Mapped[str | None] = mapped_column(ForeignKey("chats.id"))
+    emoji_target: Mapped[str | None] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class TelegramEmojiDraft(Base):
+    """A collected custom emoji and the UI slot it is intended for."""
+
+    __tablename__ = "telegram_emoji_drafts"
+    __table_args__ = (UniqueConstraint("user_id", "slot"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    slot: Mapped[str] = mapped_column(String(120))
+    custom_emoji_id: Mapped[str] = mapped_column(String(80))
+    purpose: Mapped[str] = mapped_column(String(240))
+    example: Mapped[str] = mapped_column(String(240))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class KnowledgeSource(Base):
@@ -220,6 +252,33 @@ class ChatSourceCandidate(Base):
     dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     saved_source_id: Mapped[str | None] = mapped_column(ForeignKey("knowledge_sources.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ChatSearchTask(Base):
+    """Durable state of the material search in one chat.
+
+    Written by the server only. A model may describe what the user is looking
+    for, but "the user rejected this document" is a fact about the conversation,
+    and the next turn has to be able to rely on it. The row keeps a follow-up
+    question a source-search task and keeps a rejected document out of that
+    task's candidates. It never starts a search by itself: the router decides
+    every turn, and a task that has been idle for several turns is ignored.
+    """
+
+    __tablename__ = "chat_search_tasks"
+
+    chat_id: Mapped[str] = mapped_column(ForeignKey("chats.id"), primary_key=True)
+    # The request that opened the task, as the server recorded it.
+    statement: Mapped[str] = mapped_column(Text, default="")
+    statement_message_id: Mapped[str | None] = mapped_column(String(36))
+    # The saved source this task currently rests on, if any.
+    confirmed_source_id: Mapped[str | None] = mapped_column(String(36))
+    # Source ids the user rejected for this task. Stored, never deleted.
+    rejected: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # Turns without material activity; the task stops being shown to the router
+    # once the conversation has clearly moved on.
+    idle_turns: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class ReferencedWebSource(Base):
@@ -300,3 +359,47 @@ class JobEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     job: Mapped[Job] = relationship(back_populates="events")
+
+
+class AccountEvent(Base):
+    """Durable account-level event log for the control panel.
+
+    Mirrors `job_events`, but for whole-surface changes instead of one job: the
+    panel resumes from a numeric cursor over `GET /v1/events` instead of polling
+    every list endpoint. A row is written in the same transaction as the mutation
+    it describes, so a stream reader can never observe a change that was rolled
+    back, or miss one that was committed.
+
+    `owner_id` is NULL for admin-managed shared data (modes, global settings,
+    prompts) that every owner is allowed to see; per-surface data carries its
+    owner so one account's stream never exposes another's rows.
+    """
+
+    __tablename__ = "account_events"
+    __table_args__ = (Index("ix_account_events_owner_id_id", "owner_id", "id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    type: Mapped[str] = mapped_column(String(60))
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class SelfHostAdmin(Base):
+    """Single installation owner; password login is independent of device pairing."""
+    __tablename__ = "selfhost_admin"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    login: Mapped[str] = mapped_column(String(80), unique=True)
+    password_hash: Mapped[str] = mapped_column(Text)
+    failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    first_mode_id: Mapped[str | None] = mapped_column(ForeignKey("modes.id"))
+    probe_passed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class SelfHostWebSession(Base):
+    __tablename__ = "selfhost_web_sessions"
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"), primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

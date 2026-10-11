@@ -88,8 +88,6 @@ export const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
-export const ALL_NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((group) => group.items);
-
 /** True when the given pathname should highlight the nav item. */
 export function isNavItemActive(item: NavItem, pathname: string): boolean {
   if (item.to === '/' && pathname === '/main') return true;

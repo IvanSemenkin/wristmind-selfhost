@@ -154,3 +154,46 @@
     padding-inline: var(--space-6);
   }
 }
+
+/* Selects are fields, rather than compact action menus. */
+.menu[data-variant='select'] {
+  max-width: calc(100vw - 20px);
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+}
+.menu[data-variant='select'] .list {
+  max-height: min(320px, 50svh);
+  gap: var(--space-2);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-default) transparent;
+}
+.menu[data-variant='select'] .item {
+  min-height: 44px;
+  padding: var(--space-5) var(--space-6);
+  gap: var(--space-5);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+}
+.menu[data-variant='select'] .item[data-selected] {
+  background: var(--accent-soft);
+}
+.menu[data-variant='select'] .item:focus-visible {
+  outline: 2px solid var(--text-secondary);
+  outline-offset: -2px;
+}
+.menu[data-variant='select'] .itemIcon {
+  order: 3;
+  color: var(--accent-text);
+}
+.menu[data-variant='select'] .itemLabel {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: var(--leading-snug);
+}
+.menu[data-variant='select'] .itemDescription,
+.menu[data-variant='select'] .shortcut {
+  color: var(--text-muted);
+}
+@media (prefers-reduced-motion: reduce) {
+  .menu { animation: none; }
+}

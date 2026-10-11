@@ -1,0 +1,72 @@
+name: Free self-host release
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+permissions:
+  contents: read
+concurrency:
+  group: selfhost-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Web tests and build
+        working-directory: web
+        run: |
+          npm ci
+          npm test
+          npm run build
+      - name: Python contracts
+        run: |
+          python -m pip install './server[dev]'
+          python -m pytest selfhost/tests -q
+      - name: Build allowlisted release package
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_ARCH: ${{ matrix.arch }}
+        run: |
+          python selfhost/release.py --version "${RELEASE_TAG#v}" --arch "$RELEASE_ARCH" --output "outputs/wristmind-${RELEASE_TAG#v}-${RELEASE_ARCH}.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: selfhost-${{ matrix.arch }}
+          path: outputs/wristmind-*
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: selfhost-*
+          path: outputs
+          merge-multiple: true
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" outputs/wristmind-* --draft --verify-tag --notes-file RELEASE_NOTES.md
+          gh release edit "$RELEASE_TAG" --draft=false

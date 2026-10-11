@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useChatBase } from './useChatBase';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from '@/app/router';
 import {
   BookOpen,
@@ -12,17 +13,14 @@ import {
   Zap,
 } from 'lucide-react';
 import { useActions } from '@/services';
-import { useChats, useChatMessages, useModes, useSources } from '@/store';
+import { useChats, useModes, useSources } from '@/store';
 import type { Chat } from '@/types';
-import { cn } from '@/lib/cn';
 import { formatRelativeTime, plural } from '@/lib/format';
 import {
   Button,
   EmptyState,
   IconButton,
   Menu,
-  SearchInput,
-  Select,
   useToast,
 } from '@/components';
 import { ModeDot } from '@/components/Entities';
@@ -30,10 +28,24 @@ import { useQuickActions } from '@/app/QuickActions';
 import { RenameChatDialog } from './RenameChatDialog';
 import styles from './Chats.module.css';
 
+/**
+ * Where the conversation list is rendered. `rail` is the desktop navigation
+ * rail, where the list sits on the rail's own grey tone; `page` is the mobile
+ * list screen, which is a page and keeps the page's header and footer.
+ */
+export type ChatListVariant = 'rail' | 'page';
+const listPositions = new Map<string, number>();
+
 /* -------------------------------------------------------------------------- */
 /* Row                                                                        */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * One conversation. The row is a single line everywhere: the rail is too narrow
+ * for a message preview, and the same object should not be drawn two different
+ * ways depending on the viewport. The timestamp yields to the row menu while
+ * the menu is showing, so the two never overlap.
+ */
 function ChatRow({
   chat,
   active,
@@ -45,15 +57,23 @@ function ChatRow({
   onRename: (chat: Chat) => void;
   onDelete: (chat: Chat) => void;
 }) {
-  const messages = useChatMessages(chat.id);
+  const base = useChatBase();
   const modes = useModes();
   const actions = useActions();
+  const toast = useToast();
+  const [pinning, setPinning] = useState(false);
+  const togglePin = async () => {
+    if (pinning) return;
+    setPinning(true);
+    try { await actions.updateChat(chat.id, { pinned: !chat.pinned }); }
+    catch { toast.error('Не удалось изменить закрепление'); }
+    finally { setPinning(false); }
+  };
   const mode = modes.find((m) => m.id === chat.mode_id);
-  const last = messages[messages.length - 1];
 
   return (
     <div className={styles.chatRow} data-active={active || undefined}>
-      <Link to={`/chats/${chat.id}`} className={styles.chatRowLink}>
+      <Link to={`${base}/${chat.id}`} className={styles.chatRowLink}>
         <span className={styles.chatRowTop}>
           <span className={styles.chatRowIdentity}>
             <ModeDot color={mode?.color ?? null} icon={mode?.icon} size="sm" />
@@ -61,14 +81,7 @@ function ChatRow({
           </span>
           <span className={styles.chatRowTime}>
             {chat.pinned && <Pin className={styles.pinIcon} />}
-            {formatRelativeTime(chat.updated_at)}
-          </span>
-        </span>
-        <span className={styles.chatRowBottom}>
-          <span className={styles.chatRowPreview}>
-            {last
-              ? last.content.replace(/[*`#]|<sup>[^<]*<\/sup>/g, '').slice(0, 90)
-              : 'Нет сообщений — задайте первый вопрос'}
+            <span className={styles.chatRowTimeText}>{formatRelativeTime(chat.updated_at)}</span>
           </span>
         </span>
       </Link>
@@ -88,7 +101,8 @@ function ChatRow({
               id: 'pin',
               label: chat.pinned ? 'Снять закрепление' : 'Закрепить',
               icon: chat.pinned ? <PinOff /> : <Pin />,
-              onSelect: () => void actions.updateChat(chat.id, { pinned: !chat.pinned }),
+              disabled: pinning,
+              onSelect: () => void togglePin(),
             },
             { type: 'separator' },
             {
@@ -113,41 +127,39 @@ function ChatRow({
 }
 
 /* -------------------------------------------------------------------------- */
-/* Pane                                                                       */
+/* List                                                                       */
 /* -------------------------------------------------------------------------- */
 
-export function ChatListPane({ activeChatId }: { activeChatId?: string }) {
+/**
+ * The conversation list itself: date groups and rows.
+ * Rendered once — inside the rail on desktop and as the mobile list screen —
+ * so both surfaces stay behaviourally identical. It carries no search field and
+ * no mode filter: the owner asked for a plain list of conversations.
+ */
+export function ChatList({
+  activeChatId,
+  variant = 'page',
+}: {
+  activeChatId?: string;
+  variant?: ChatListVariant;
+}) {
+  const base = useChatBase();
   const chats = useChats();
-  const modes = useModes();
   const sources = useSources();
   const actions = useActions();
-  const quick = useQuickActions();
   const toast = useToast();
   const navigate = useNavigate();
 
-  const [query, setQuery] = useState('');
-  const [modeFilter, setModeFilter] = useState<string>('all');
+  const listRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const node = listRef.current;
+    if (!node) return;
+    const key = `${base}:${variant}`;
+    node.scrollTop = listPositions.get(key) ?? 0;
+    return () => { listPositions.set(key, node.scrollTop); };
+  }, [base, variant]);
+
   const [renaming, setRenaming] = useState<Chat | null>(null);
-
-  const modeOptions = useMemo(
-    () => [
-      { value: 'all', label: 'Все режимы' },
-      { value: 'quick', label: 'Быстрые чаты' },
-      ...modes.map((mode) => ({ value: mode.id, label: mode.name })),
-    ],
-    [modes],
-  );
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return chats.filter((chat) => {
-      if (modeFilter === 'quick' && chat.mode_id !== null) return false;
-      if (modeFilter !== 'all' && modeFilter !== 'quick' && chat.mode_id !== modeFilter) return false;
-      if (!q) return true;
-      const mode = modes.find((m) => m.id === chat.mode_id);
-      return `${chat.title} ${mode?.name ?? ''}`.toLowerCase().includes(q);
-    });
-  }, [chats, query, modeFilter, modes]);
 
   const groups = useMemo(() => {
     const now = Date.now();
@@ -158,7 +170,7 @@ export function ChatListPane({ activeChatId }: { activeChatId?: string }) {
       { label: 'На этой неделе', items: [] },
       { label: 'Ранее', items: [] },
     ];
-    for (const chat of filtered) {
+    for (const chat of chats) {
       const age = now - new Date(chat.updated_at).getTime();
       if (chat.pinned) result[0].items.push(chat);
       else if (age < day) result[1].items.push(chat);
@@ -166,13 +178,13 @@ export function ChatListPane({ activeChatId }: { activeChatId?: string }) {
       else result[3].items.push(chat);
     }
     return result.filter((group) => group.items.length > 0);
-  }, [filtered]);
+  }, [chats]);
 
   const handleDelete = async (chat: Chat) => {
     try {
       await actions.deleteChat(chat.id);
       toast.success('Чат удалён', chat.title);
-      if (chat.id === activeChatId) navigate('/chats');
+      if (chat.id === activeChatId) navigate(base);
     } catch {
       toast.error('Не удалось удалить чат');
     }
@@ -181,56 +193,26 @@ export function ChatListPane({ activeChatId }: { activeChatId?: string }) {
   const readySources = sources.filter((s) => s.status === 'ready').length;
 
   return (
-    <section className={styles.listPane} aria-label="Список чатов">
-      <header className={styles.listHeader}>
-        <div className={styles.listHeaderTop}>
-          <h1 className={styles.listTitle}>Чаты</h1>
-          <Button
-            size="sm" variant="primary" iconLeft={<Plus />}
-            onClick={() => quick.newChat(null)}
-          >
-            Новый
-          </Button>
-        </div>
-        <div className={styles.listControls}>
-          <SearchInput
-            size="sm" value={query}
-            placeholder="Поиск по чатам" onChange={(e) => setQuery(e.target.value)}
-            onClear={() => setQuery('')}
-          />
-          <Select
-            size="sm" value={modeFilter}
-            options={modeOptions}
-            onChange={setModeFilter}
-            ariaLabel="Фильтр по режиму" className={styles.modeFilter}
-          />
-        </div>
-      </header>
-
-      <div className={styles.listScroll}>
-        {filtered.length === 0 ? (
-          <EmptyState
-            compact
-            icon={<MessagesSquare />}
-            title={query ? 'Ничего не найдено' : 'Чатов пока нет'}
-            description={
-              query
-                ? 'Попробуйте изменить запрос или сбросить фильтр по режиму.'
-                : 'Создайте чат и выберите режим — от него зависят модель и база знаний.'
-            }
-            action={
-              <Button
-                size="sm" variant="primary" iconLeft={<Plus />}
-                onClick={() => quick.newChat(null)}
-              >
-                Новый чат
-              </Button>
-            }
-          />
+    <div className={styles.chatList} data-variant={variant} data-simple={base === '/talk' || undefined}>
+      <div ref={listRef} className={styles.listScroll} data-variant={variant}>
+        {chats.length === 0 ? (
+          variant === 'rail' ? (
+            /* The rail has no room for an illustrated empty state, and the
+               create action already sits in the section head above. */
+            <p className={styles.railEmpty}>Пока нет чатов</p>
+          ) : (
+            <EmptyState
+              compact
+              icon={<MessagesSquare />}
+              title="Чатов пока нет"
+              description="Создайте чат и выберите режим — от него зависят модель и база знаний."
+              action={<NewChatButton />}
+            />
+          )
         ) : (
           groups.map((group) => (
             <div key={group.label} className={styles.chatGroup}>
-              <div className={styles.chatGroupLabel}>
+              <div className={styles.chatGroupLabel} data-variant={variant}>
                 {group.label}
                 <span className={styles.chatGroupCount}>{group.items.length}</span>
               </div>
@@ -248,18 +230,54 @@ export function ChatListPane({ activeChatId }: { activeChatId?: string }) {
         )}
       </div>
 
-      <footer className={styles.listFooter}>
-        <span>
-          {filtered.length} {plural(filtered.length, 'чат', 'чата', 'чатов')} ·{' '}
-          {chats.filter((c) => c.pinned).length} закреплено
-        </span>
-        <span className={styles.listFooterMeta}>
-          <BookOpen />
-          {readySources} в базе знаний
-        </span>
-      </footer>
+      {variant === 'page' && (
+        <footer className={styles.listFooter}>
+          <span>
+            {chats.length} {plural(chats.length, 'чат', 'чата', 'чатов')} ·{' '}
+            {chats.filter((c) => c.pinned).length} закреплено
+          </span>
+          <span className={styles.listFooterMeta}>
+            <BookOpen />
+            {readySources} в базе знаний
+          </span>
+        </footer>
+      )}
 
       <RenameChatDialog chat={renaming} onClose={() => setRenaming(null)} />
+    </div>
+  );
+}
+
+function NewChatButton({ compact = false }: { compact?: boolean }) {
+  const quick = useQuickActions();
+  return (
+    <Button
+      size="sm" variant="primary" iconLeft={<Plus />}
+      onClick={() => quick.newChat(null)}
+    >
+      {compact ? 'Новый' : 'Новый чат'}
+    </Button>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Mobile list screen                                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The mobile list screen. On desktop the same list lives inside the rail, so
+ * this pane exists only below the rail breakpoint.
+ */
+export function ChatListPane({ activeChatId }: { activeChatId?: string }) {
+  return (
+    <section className={styles.listPane} aria-label="Список чатов">
+      <header className={styles.listHeader}>
+        <div className={styles.listHeaderTop}>
+          <h1 className={styles.listTitle}>Чаты</h1>
+          <NewChatButton compact />
+        </div>
+      </header>
+      <ChatList activeChatId={activeChatId} variant="page" />
     </section>
   );
 }
@@ -269,32 +287,20 @@ export function ChatListPane({ activeChatId }: { activeChatId?: string }) {
 /* -------------------------------------------------------------------------- */
 
 export function ConversationPlaceholder() {
-  const chats = useChats();
   const quick = useQuickActions();
 
   return (
     <div className={styles.placeholder}>
       <EmptyState
         icon={<Zap />}
-        title="Выберите чат" description="Откройте диалог слева или начните новый. Быстрый чат отвечает без поиска по источникам, чат режима — с ссылками на документы." action={
+        title="Выберите чат"
+        description="Диалоги лежат в рельсе слева. Быстрый чат отвечает без поиска по источникам, чат режима — с ссылками на документы."
+        action={
           <Button variant="primary" iconLeft={<Plus />} onClick={() => quick.newChat(null)}>
             Новый чат
           </Button>
         }
       />
-      {chats.length > 0 && (
-        <div className={styles.recentList}>
-          <div className={styles.recentLabel}>
-            <Pin /> Недавние
-          </div>
-          {chats.slice(0, 5).map((chat) => (
-            <Link key={chat.id} to={`/chats/${chat.id}`} className={cn(styles.recentItem)}>
-              <span className={styles.recentTitle}>{chat.title}</span>
-              <span className={styles.recentTime}>{formatRelativeTime(chat.updated_at)}</span>
-            </Link>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

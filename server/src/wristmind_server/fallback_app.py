@@ -158,6 +158,26 @@ async def health() -> dict[str, str]:
     return {"status": "ok" if configured else "unconfigured", "mode": "fallback"}
 
 
+async def _main_available() -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0), trust_env=False) as client:
+            response = await client.get("http://127.0.0.1:18080/health")
+        return response.status_code == 200 and response.json().get("status") == "ok"
+    except (httpx.HTTPError, ValueError):
+        return False
+
+
+@app.get("/fallback/status")
+async def server_status() -> dict[str, str]:
+    main_up = await _main_available()
+    fallback_ready = bool(settings.fallback_ticket_secret and settings.deepseek_api_key)
+    return {
+        "main": "up" if main_up else "down",
+        "fallback": "ok" if fallback_ready else "unconfigured",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @app.post("/fallback/v1/respond", response_model=FallbackAnswerResponse)
 async def respond(
     request: FallbackAnswerRequest,

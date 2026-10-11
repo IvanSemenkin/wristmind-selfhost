@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
@@ -24,11 +25,15 @@ from wristmind_server.worker import (
     create_source_candidate,
     deep_web_open_requirement,
     deterministic_route_fallback,
+    exact_source_open_requirement,
     is_foundational_source,
     is_simple_fresh_fact,
     is_trivial_research_request,
     lightweight_request_anchor,
     local_first_snapshot,
+    material_rejected_now,
+    needs_fresh_search,
+    task_statement_from_history,
     present_working_source,
     primary_source_results,
     providers,
@@ -37,6 +42,7 @@ from wristmind_server.worker import (
     requests_full_source_text,
     route_uses_web,
     should_seek_working_source,
+    task_needs_exact_text,
 )
 
 
@@ -364,7 +370,7 @@ def test_semantic_working_source_intent_does_not_depend_on_fixed_phrases(monkeyp
 def test_explicit_intent_never_bypasses_candidate_relevance_check(monkeypatch):
     seen_prompt = ""
 
-    async def stream_answer(_model_id, messages):
+    async def stream_answer(_model_id, messages, **_kwargs):
         nonlocal seen_prompt
         seen_prompt = messages[0]["content"]
         yield '{"foundation":false}'
@@ -521,6 +527,57 @@ def test_deep_web_evidence_gate_is_scoped_and_degrades_gracefully():
     assert deep_web_open_requirement(_comparison_route("web", "current_fact"), "Сравни", results, set(), {}) is None
 
 
+def _excerpt_route(retrieval="web", *, excerpt=True, primary=False, fast=False):
+    from wristmind_server.worker import RetrievalRoute, WriteIntents
+
+    return RetrievalRoute(
+        retrieval=retrieval, reasoning="low", verification=False,
+        freshness_required=False, task_type="other",
+        intents=WriteIntents(
+            wants_source_excerpt=excerpt, wants_primary_source=primary, wants_fast_answer=fast,
+        ),
+    )
+
+
+def test_exact_text_task_is_recognized_by_intent_or_phrasing():
+    assert task_needs_exact_text(_excerpt_route(), "просто вопрос") is True
+    assert task_needs_exact_text(_excerpt_route(excerpt=False), "Какая сейчас погода") is False
+    # Deterministic fallback for turns where the router reported no intent.
+    assert task_needs_exact_text(
+        _excerpt_route(excerpt=False), "Пришли оригинальный текст главы"
+    ) is True
+
+
+def test_exact_text_request_must_read_a_document_before_answering():
+    """A "give me the exact text" task is not a deep_web comparison.
+
+    The deep_web gate deliberately declines every other route, so nothing forced
+    a read on this path: an answer could be assembled from snippets and then
+    presented as a checked result. An exact-text task now reads one candidate
+    before it is allowed to conclude anything about the document.
+    """
+    request = "Дай точный текст задачи 7.13 из сборника"
+    route = _excerpt_route()
+    results = _results()
+
+    # The deep gate keeps excluding this route — that is exactly the hole filled.
+    assert deep_web_open_requirement(route, request, results, set(), {}) is None
+    # Nothing read yet: the next step must be an open, not an answer.
+    assert exact_source_open_requirement(route, request, results, set(), {}) == "r1"
+    # A document was read: the gate stops blocking the answer.
+    opened = {"r1": ("Сборник", "https://a.example/sbornik", "текст")}
+    assert exact_source_open_requirement(route, request, results, {"r1"}, opened) is None
+    # Nothing readable left to try: degrade gracefully instead of looping.
+    assert exact_source_open_requirement(route, request, {}, set(), {}) is None
+    assert exact_source_open_requirement(route, request, results, {"r1", "r2"}, {}) is None
+    # An ordinary question is never forced to read anything.
+    assert exact_source_open_requirement(
+        _excerpt_route(excerpt=False), "Какая сейчас погода в Москве", results, set(), {}
+    ) is None
+    # An explicit request for speed keeps the snippet answer the user chose.
+    assert exact_source_open_requirement(_excerpt_route(fast=True), request, results, set(), {}) is None
+
+
 def test_simple_fresh_fact_uses_a_deterministic_anchor():
     request = "Какая сейчас последняя стабильная версия Android?"
     route = _comparison_route("web", "current_fact")
@@ -637,7 +694,7 @@ def test_ordinary_source_requests_do_not_dump_long_material():
 def test_named_text_is_treated_as_working_material_without_a_future_task(monkeypatch):
     prompts = []
 
-    async def stream_answer(_model_id, messages):
+    async def stream_answer(_model_id, messages, **_kwargs):
         prompts.append(messages[0]["content"])
         yield '{"requested":true}' if len(prompts) == 1 else '{"foundation":true}'
 
@@ -919,6 +976,102 @@ def test_asking_to_think_harder_does_not_switch_the_web_on(monkeypatch):
 
     assert route.retrieval == "none"
     assert route_uses_web(route) == (False, False)
+
+
+def test_a_rejection_is_not_reported_again_on_every_later_turn():
+    """One correction must not make every later turn reject the material again."""
+    route = SimpleNamespace(intents=WriteIntents(rejects_previous_material=True))
+
+    assert material_rejected_now(route, "попробуй еще раз", {"src"}) is False
+    assert material_rejected_now(route, "это не тот сборник", {"src"}) is True
+    # Nothing recorded yet: the model's semantic reading still counts.
+    assert material_rejected_now(route, "попробуй еще раз", set()) is True
+
+
+def test_the_task_label_comes_from_the_informative_request():
+    history = [
+        SimpleNamespace(role="user", content="попробуй еще раз"),
+        SimpleNamespace(
+            role="user",
+            content="8 класс год неизвестно, попробуй поискать другие источники они идут почти последовательно",
+        ),
+    ]
+
+    assert task_statement_from_history(history, "попробуй еще раз").startswith("8 класс год неизвестно")
+    assert task_statement_from_history([], "попробуй еще раз") == "попробуй еще раз"
+
+
+def test_a_requested_search_is_not_replaced_by_known_links():
+    from wristmind_server.worker import RetrievalRoute, WriteIntents
+
+    def route(**intents):
+        return RetrievalRoute(
+            retrieval="deep_web", reasoning="high", verification=False,
+            freshness_required=False, task_type="other", intents=WriteIntents(**intents),
+        )
+
+    # The exact wordings the owner used in production.
+    assert needs_fresh_search(route(), "найди эту задачу в интернете по моему описанию выше") is True
+    assert needs_fresh_search(route(), "попробуй поискать другие источники они идут почти последовательно") is True
+    assert needs_fresh_search(route(rejects_previous_material=True), "попробуй еще раз") is True
+    assert needs_fresh_search(route(), "поищи в интернете глубже по этому описанию") is True
+    # An ordinary comparison keeps the cheap reuse of links already found.
+    assert needs_fresh_search(route(), "Сравни две последние версии по функциям") is False
+    # "Тот PDF" points at material already known: no new query is needed.
+    assert needs_fresh_search(route(wants_primary_source=True), "Найди тот PDF и выведи задачу про бревна") is False
+
+
+def test_rejecting_the_material_used_here_returns_to_searching(monkeypatch):
+    """«Это не тот сборник» must not be answered from the same wrong document."""
+    route = _run_router(
+        monkeypatch, "Это не тот сборник", _route_reply(rejects_previous_material=True),
+        titles=["Стратегии"],
+    )
+
+    assert route.intents.rejects_previous_material is True
+    assert route.retrieval == "deep_web"
+    assert route.verification is True and route.safeguarded is True
+
+
+def test_no_web_still_beats_a_rejected_material(monkeypatch):
+    route = _run_router(
+        monkeypatch, "Не тот сборник, но в интернет не лезь",
+        _route_reply(rejects_previous_material=True, wants_no_web=True),
+        titles=["Стратегии"],
+    )
+
+    assert route.retrieval == "none"
+
+
+def test_a_rejected_material_does_not_force_a_search_when_speed_was_requested(monkeypatch):
+    route = _run_router(
+        monkeypatch, "Не тот, ответь быстро", 
+        _route_reply(rejects_previous_material=True, wants_fast_answer=True),
+        titles=["Стратегии"],
+    )
+
+    assert route.retrieval == "none"
+    assert route.safeguarded is False
+
+
+def test_router_prompt_carries_the_continuation_rule(monkeypatch):
+    """A short follow-up must be recognisable as the same source hunt."""
+    seen = ""
+
+    async def stream(_model_id, messages):
+        nonlocal seen
+        seen = messages[0]["content"]
+        yield _route_reply()
+
+    monkeypatch.setattr(providers, "stream_answer", stream)
+    asyncio.run(choose_retrieval_route(
+        "mock:test", "А муниципальный этап?", "Локальных данных нет",
+        requested_web_search=False, requested_deep_research=False,
+    ))
+
+    assert "Продолжение задачи поиска материала" in seen
+    assert "rejects_previous_material" in seen
+    assert "сменил тему" in seen
 
 
 def test_reusing_saved_material_avoids_a_new_search(monkeypatch):

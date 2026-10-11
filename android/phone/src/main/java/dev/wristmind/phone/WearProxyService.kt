@@ -116,6 +116,7 @@ class WearProxyService : WearableListenerService() {
     }
 
     private suspend fun executeAuthorized(api: WristMindApi, operation: String, input: JSONObject): ByteArray = when (operation) {
+        ProxyOperations.SPEECH_STREAM -> api.speechStream(input).toString().toByteArray()
         ProxyOperations.REGISTER_PUSH_TOKEN -> {
             api.registerPushToken(input.getString("token"))
             ProxyJson.objectBytes()

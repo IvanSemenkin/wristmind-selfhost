@@ -86,6 +86,12 @@ button {
   cursor: pointer;
 }
 
+/* A drag-to-resize corner on a form control is never wanted here: it lets the
+   layout be broken by accident and the handle overlaps the field's own edge. */
+textarea {
+  resize: none;
+}
+
 img,
 svg,
 video {

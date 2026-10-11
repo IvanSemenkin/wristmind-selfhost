@@ -200,6 +200,47 @@ test('15. an image becomes a labelled element, never a raw tag', () => {
 
 /* ---------- math --------------------------------------------------------- */
 
+test('plain Cyrillic physical subscripts from model answers render as one index', () => {
+  assert.deepEqual(paragraphInline('(c_ал = 920, c_воды = 4200)'), [
+    { type: 'text', value: '(' },
+    { type: 'math', tex: 'c_ал', display: false },
+    { type: 'text', value: ' = 920, ' },
+    { type: 'math', tex: 'c_воды', display: false },
+    { type: 'text', value: ' = 4200)' },
+  ]);
+  for (const source of ['c_ал', 'c_{ал}', 'c_{\\text{ал}}']) {
+    const html = renderMathHtml(source, false);
+    assert.ok(html);
+    assert.match(html, /<msub>/);
+    assert.match(html, /(?:<mtext>ал<\/mtext>|<mrow><mtext>а<\/mtext><mtext>л<\/mtext><\/mrow>)/);
+  }
+});
+
+test('Cyrillic subscripts work with explicit inline and display delimiters', () => {
+  for (const source of ['$c_ал = 920$', '\\(c_ал = 920\\)', '$$c_ал = 920$$', '\\[c_ал = 920\\]']) {
+    const tree = parseRichText(source);
+    assert.ok(collectTypes(tree).includes('math'));
+    const html = renderMathHtml('c_ал = 920', source.startsWith('$$') || source.startsWith('\\['));
+    assert.match(html ?? '', /<msub><mi>c<\/mi><mtext>ал<\/mtext><\/msub>/);
+  }
+});
+
+test('subscript recognition preserves code, identifiers, URLs and escaped underscores', () => {
+  for (const source of ['user_name', 'файл_ал', 'specific_ал', 'https://example.org/c_ал', 'c\\_ал', '`c_ал`', '```\nc_ал\n```']) {
+    assert.equal(typesOf(source).has('math'), false, source);
+  }
+  const href = 'https://example.org/?q=c_ал';
+  assert.deepEqual(paragraphInline(`[ссылка](${href})`), [
+    { type: 'link', href, children: [{ type: 'text', value: 'ссылка' }] },
+  ]);
+  const tex = '\\text{имя\\_файла {и\\_папки}} + c_ал';
+  const html = renderMathHtml(tex, false);
+  assert.ok(html);
+  assert.match(html, /имя_файла/);
+  assert.match(html, /и_папки/);
+  assert.match(html, /<msub><mi>c<\/mi><mtext>ал<\/mtext><\/msub>/);
+});
+
 test('18. inline $x^2$ becomes a math node', () => {
   assert.deepEqual(paragraphInline('$x^2$'), [{ type: 'math', tex: 'x^2', display: false }]);
   assert.match(renderMathHtml('x^2', false) ?? '', /katex/);
@@ -210,6 +251,19 @@ test('19. \\[ … \\] becomes display math and renders', () => {
   assert.equal(math.display, true);
   assert.match(math.tex, /\\text/);
   assert.match(renderMathHtml(math.tex, true) ?? '', /katex/);
+});
+
+test('a separated fraction stays between prose blocks and has a horizontal fraction bar', () => {
+  const source = 'Решим уравнение:\n\n\\[\nx = \\frac{a^2+b^2}{2ab}\n\\]\n\nОтвет: 5.';
+  const blocks = parseRichText(source);
+  assert.deepEqual(blocks.map((block) => block.type), ['paragraph', 'math', 'paragraph']);
+  assert.equal(blocks[1].type === 'math' && blocks[1].tex, 'x = \\frac{a^2+b^2}{2ab}');
+  assert.match(renderMathHtml('x = \\frac{a^2+b^2}{2ab}', true) ?? '', /frac-line/);
+});
+
+test('display math adjacent to prose still becomes its own block', () => {
+  const blocks = parseRichText('Решим: \\[x = \\frac{a}{b}\\] Ответ: 5.');
+  assert.deepEqual(blocks.map((block) => block.type), ['paragraph', 'math', 'paragraph']);
 });
 
 test('20. \\frac{a}{b} renders both inline and display', () => {

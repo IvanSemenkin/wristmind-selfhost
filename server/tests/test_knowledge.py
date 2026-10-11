@@ -204,6 +204,8 @@ async def test_chat_working_source_is_passed_in_full_when_it_fits():
         settings = get_settings().model_copy(update={
             "full_context_threshold_tokens": 1,
             "retrieval_context_budget_tokens": 6,
+            # Explicit so the check is about pinning, not about the chat ceiling.
+            "chat_source_context_budget_tokens": 6,
         })
         context, meta = await knowledge_context(
             session, mode.id, "сочинение", ProviderRouter(settings), settings,
@@ -271,6 +273,7 @@ async def test_chat_working_source_is_ranked_when_it_does_not_fit():
         settings = get_settings().model_copy(update={
             "full_context_threshold_tokens": 1,
             "retrieval_context_budget_tokens": 4,
+            "chat_source_context_budget_tokens": 4,
         })
         context, meta = await knowledge_context(
             session, mode.id, "текст", ProviderRouter(settings), settings, chat_id="chat-big",
@@ -283,6 +286,38 @@ async def test_chat_working_source_is_ranked_when_it_does_not_fit():
         present = [text for text in ("Первая половина", "Вторая половина") if text in context]
         assert len(present) == 1, context
         assert meta["context_tokens"] < meta["source_tokens"]
+
+
+@pytest.mark.asyncio
+async def test_chat_material_has_its_own_larger_ceiling():
+    """A saved document is not squeezed out by the shared retrieval budget."""
+    async with SessionFactory() as session:
+        mode = Mode(
+            name="Литература", color="#65F5C2", icon="book", system_prompt="",
+            response_model_id="openrouter:google/gemini-2.5-flash-lite",
+        )
+        session.add(mode)
+        await session.flush()
+        await _chat_working_source(session, mode, "chat-ceiling", [
+            ("Первая половина текста", 4),
+            ("Вторая половина текста", 4),
+        ])
+        await session.commit()
+
+        settings = get_settings().model_copy(update={
+            "full_context_threshold_tokens": 1,
+            # The general budget is far too small for this material...
+            "retrieval_context_budget_tokens": 4,
+            # ...but the chat ceiling is what applies to the chat's own material.
+            "chat_source_context_budget_tokens": 300,
+        })
+        context, meta = await knowledge_context(
+            session, mode.id, "текст", ProviderRouter(settings), settings, chat_id="chat-ceiling",
+        )
+
+        assert meta["strategy"] == "full_sources"
+        assert meta["full_source_tokens"] == 8
+        assert "Первая половина" in context and "Вторая половина" in context
 
 
 @pytest.mark.asyncio

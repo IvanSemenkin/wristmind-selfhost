@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,16 +30,19 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.saveable.rememberSaveable
+import dev.wristmind.phone.install.WatchSetupViewModel
+import dev.wristmind.phone.install.WatchSetupScreen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -47,9 +52,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 
-private val Mint = Color(0xFF65F5C2)
-private val Ink = Color(0xFF07110F)
-private val Panel = Color(0xFF10231E)
+private val Mint = Color(0xFF69AEFF)
+private val Ink = Color(0xFF070B12)
+private val Panel = Color(0xFF161E2A)
 private val DangerContainer = Color(0xFF4C171A)
 private val OnDangerContainer = Color(0xFFFFDAD8)
 
@@ -62,43 +67,57 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun CompanionApp(vm: PhoneViewModel = viewModel()) {
-    val state by vm.state.collectAsState()
+    val state by vm.state.collectAsStateWithLifecycle()
+    val setupVm: WatchSetupViewModel = viewModel()
+    val setup by setupVm.state.collectAsStateWithLifecycle()
+    var installing by rememberSaveable { mutableStateOf(false) }
+    androidx.activity.compose.BackHandler(installing) { if (!setup.busy) installing = false }
     MaterialTheme(
         colorScheme = darkColorScheme(
             primary = Mint,
             onPrimary = Ink,
             background = Ink,
             surface = Panel,
-            onSurface = Color(0xFFE6FFF5),
+            onSurface = Color(0xFFE8EDF4),
         ),
     ) {
         Surface(Modifier.fillMaxSize()) {
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(Brush.verticalGradient(listOf(Color(0xFF0B1A17), Ink, Color(0xFF050A09)))),
+                    .background(Ink),
             ) {
-                if (state.enrolled) CompanionHome(state, vm) else PairScreen(state, vm)
+                if (installing) WatchSetupScreen(setup, onClose = { installing = false; vm.refresh() },
+                    onStep = setupVm::next, onHost = setupVm::host, onPairPort = setupVm::pairPort,
+                    onCode = setupVm::code, onConnectPort = setupVm::connectPort,
+                    onPair = setupVm::pair, onCheck = setupVm::check, onInstall = setupVm::install,
+                    onConfigure = setupVm::configure)
+                else if (state.enrolled) CompanionHome(state, vm) { setupVm.begin(); installing = true }
+                else PairScreen(state, vm) { setupVm.begin(); installing = true }
             }
         }
     }
 }
 
 @Composable
-private fun PairScreen(state: PhoneState, vm: PhoneViewModel) {
+private fun PairScreen(state: PhoneState, vm: PhoneViewModel, onSetup: () -> Unit) {
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        Modifier.fillMaxSize().safeDrawingPadding().imePadding().verticalScroll(rememberScrollState()).padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Spacer(Modifier.height(32.dp))
         Text("WRISTMIND", color = Mint, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-        Text("Подключение часов", fontSize = 30.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+        Text("Подключение WristMind", fontSize = 30.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
         Text(
             "Откройте на сайте Настройки → Подключить устройство и введите одноразовый код ниже.",
-            color = Color(0xFFA9C8BD),
+            color = Color(0xFFA8B2C1),
             textAlign = TextAlign.Center,
         )
+        OutlinedTextField(value = state.serverUrl, onValueChange = vm::setServerUrl,
+            label = { Text("Адрес вашей панели") }, placeholder = { Text("https://ai.example.com") },
+            modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !state.busy,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
         OutlinedTextField(
             value = state.pairingCode,
             onValueChange = vm::setPairingCode,
@@ -110,22 +129,24 @@ private fun PairScreen(state: PhoneState, vm: PhoneViewModel) {
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { if (state.pairingCode.length == 6) vm.pair() }),
         )
-        PrimaryButton("Подключить часы", !state.busy && state.pairingCode.length == 6, vm::pair)
+        PrimaryButton("Подключить сервер", !state.busy && state.pairingCode.length == 6, vm::pair)
         StatusLine(state)
+        TextButton(onClick = onSetup, enabled = !state.busy) { Text("Сначала установить приложение на часы") }
     }
 }
 
 @Composable
-private fun CompanionHome(state: PhoneState, vm: PhoneViewModel) {
+private fun CompanionHome(state: PhoneState, vm: PhoneViewModel, onSetup: () -> Unit) {
     var dialog by remember { mutableStateOf<DialogAction?>(null) }
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        Modifier.fillMaxSize().safeDrawingPadding().imePadding().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Spacer(Modifier.height(20.dp))
         Text("WRISTMIND", color = Mint, fontSize = 14.sp, fontWeight = FontWeight.Bold)
         Text("Companion", fontSize = 32.sp, fontWeight = FontWeight.SemiBold)
         StatusCard(state)
+        PrimaryButton("Установить или обновить на часах", !state.busy, onSetup)
         ConnectionCard(state)
         SecondaryButton("Проверить соединение", !state.busy, vm::refresh)
         PrimaryButton(
@@ -136,7 +157,7 @@ private fun CompanionHome(state: PhoneState, vm: PhoneViewModel) {
         Text(
             if (state.paused) "Прокси и фоновая синхронизация остановлены. Авторизация и сопряжение сохранены."
             else "Прокси через Wearable Data Layer работает автоматически в фоне.",
-            color = Color(0xFFA9C8BD),
+            color = Color(0xFFA8B2C1),
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -173,10 +194,10 @@ private fun CompanionHome(state: PhoneState, vm: PhoneViewModel) {
 private fun ConnectionCard(state: PhoneState) {
     Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(24.dp)) {
         Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Xiaomi Watch 2", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(state.watchName, fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Text(
                 "Прокси через Wearable Data Layer. Канал Bluetooth или Wi‑Fi выбирает система.",
-                color = Color(0xFFA9C8BD),
+                color = Color(0xFFA8B2C1),
             )
             ConnectionRow("Доступ к WristMind", state.serverReachable, "доступен", "нет доступа")
             ConnectionRow("Часы", if (state.busy) null else state.watchReachable, "обнаружены", "не обнаружены")
@@ -189,10 +210,10 @@ private fun ConnectionRow(label: String, connected: Boolean?, connectedText: Str
     val (value, color) = when (connected) {
         true -> connectedText to Mint
         false -> disconnectedText to Color(0xFFFFC27D)
-        null -> "проверяется" to Color(0xFFA9C8BD)
+        null -> "проверяется" to Color(0xFFA8B2C1)
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, color = Color(0xFFA9C8BD))
+        Text(label, color = Color(0xFFA8B2C1))
         Text(value, color = color, fontWeight = FontWeight.Medium)
     }
 }
@@ -211,7 +232,7 @@ private fun StatusCard(state: PhoneState) {
             else Box(Modifier.height(10.dp).fillMaxWidth(.03f).background(statusColor(state.status), RoundedCornerShape(10.dp)))
             Column(Modifier.weight(1f)) {
                 Text(statusTitle(state.status), fontWeight = FontWeight.Bold)
-                Text(state.statusText, color = Color(0xFFA9C8BD), fontSize = 13.sp)
+                Text(state.statusText, color = Color(0xFFA8B2C1), fontSize = 13.sp)
             }
         }
     }
@@ -221,7 +242,7 @@ private fun StatusCard(state: PhoneState) {
 private fun StatusLine(state: PhoneState) {
     Text(
         state.statusText,
-        color = if (state.status == CompanionStatus.ERROR) Color(0xFFFF9B93) else Color(0xFFA9C8BD),
+        color = if (state.status == CompanionStatus.ERROR) Color(0xFFFF9B93) else Color(0xFFA8B2C1),
         textAlign = TextAlign.Center,
         modifier = Modifier.fillMaxWidth(),
     )
@@ -245,8 +266,9 @@ private fun statusColor(status: CompanionStatus) = when (status) {
 
 @Composable
 private fun PrimaryButton(text: String, enabled: Boolean, onClick: () -> Unit) {
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     Button(
-        onClick = onClick,
+        onClick = { keyboard?.hide(); onClick() },
         enabled = enabled,
         modifier = Modifier.fillMaxWidth().height(54.dp),
         colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = Ink),

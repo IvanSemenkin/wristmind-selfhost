@@ -1,4 +1,3 @@
-import { useEffect, type ReactNode } from 'react';
 import { Link } from '@/app/router';
 import { Compass, Watch } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -78,29 +77,6 @@ export function NotFoundPage() {
       <Link to="/" className={styles.notFoundLink}>
         Вернуться к обзору
       </Link>
-    </div>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/* Scroll restoration                                                         */
-/* -------------------------------------------------------------------------- */
-
-/** Resets the content scroll position whenever the route changes. */
-export function useResetScrollOnRouteChange(
-  containerRef: React.RefObject<HTMLElement | null>,
-  routeKey: string,
-): void {
-  useEffect(() => {
-    const node = containerRef.current;
-    if (node) node.scrollTop = 0;
-  }, [containerRef, routeKey]);
-}
-
-export function RouteTransition({ children, routeKey }: { children: ReactNode; routeKey: string }) {
-  return (
-    <div key={routeKey} className={styles.routeTransition}>
-      {children}
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import type { SpeechPacket, SpeechResult } from '@/lib/streamingDictation';
 import type {
   Chat,
   ChatCreateInput,
@@ -47,6 +48,45 @@ export type WristMindEvent =
   | { type: 'pairing.removed'; code: string };
 
 export type WristMindEventListener = (event: WristMindEvent) => void;
+
+/* =============================================================================
+   Live account feed (`GET /v1/events`).
+
+   The local `WristMindEvent` bus above carries whole entities because this
+   process produced them. The server feed deliberately does not: it names what
+   changed, and the store refetches that slice. A payload that was already
+   superseded on the server can therefore never overwrite newer local state.
+   ========================================================================== */
+
+export interface AccountEvent {
+  id: number;
+  type: string;
+  data: Record<string, unknown>;
+}
+
+export interface AccountEventHandlers {
+  onEvent(event: AccountEvent): void;
+  /** The cursor fell behind the retention window: reload everything once. */
+  onResync?(): void;
+  onStatusChange?(connected: boolean): void;
+}
+
+export const ACCOUNT_EVENT = {
+  chatCreated: 'chat.created',
+  chatUpdated: 'chat.updated',
+  chatDeleted: 'chat.deleted',
+  messageCreated: 'message.created',
+  messageUpdated: 'message.updated',
+  modeUpdated: 'mode.updated',
+  modeRemoved: 'mode.removed',
+  sourceUpdated: 'source.updated',
+  sourceRemoved: 'source.removed',
+  deviceUpdated: 'device.updated',
+  deviceRemoved: 'device.removed',
+  settingsUpdated: 'settings.updated',
+  pairingUpdated: 'pairing.updated',
+  resync: 'resync',
+} as const;
 
 export interface ModesService {
   list(): Promise<Mode[]>;
@@ -121,6 +161,8 @@ export interface SystemService {
 }
 
 export interface WristMindService {
+  speechStream?(packet: SpeechPacket, signal: AbortSignal): Promise<SpeechResult>;
+  transcribeAudio?(audio: Blob, signal: AbortSignal): Promise<string>;
   readonly modes: ModesService;
   readonly chats: ChatsService;
   readonly knowledge: KnowledgeService;
@@ -132,6 +174,12 @@ export interface WristMindService {
   readonly system: SystemService;
   /** Server-initiated change feed. Returns an unsubscribe function. */
   subscribe(listener: WristMindEventListener): () => void;
+  /**
+   * Live account feed over SSE, resumable from `after`. Optional: an
+   * implementation without a stream simply omits it and the store keeps
+   * refreshing through its polling fallback.
+   */
+  subscribeAccountEvents?(after: number, handlers: AccountEventHandlers): () => void;
   /**
    * Optional single round-trip warm-up. Implementations that need several
    * requests simply omit it and the store falls back to parallel `list()` calls.

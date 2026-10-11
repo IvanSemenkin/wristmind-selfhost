@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useService } from '@/services';
 import { describeError } from '@/services/errors';
 import type { ChatSources } from '@/types';
+import { useSnapshot } from '@/store/hooks';
 
 /* =============================================================================
    Loads the chat-scoped source index from the read-only endpoint.
@@ -24,6 +25,7 @@ export interface ChatSourcesState {
  */
 export function useChatSources(chatId: string | undefined, revision?: unknown): ChatSourcesState {
   const service = useService();
+  const { chatSourcesRevision } = useSnapshot();
   const [sources, setSources] = useState<ChatSources | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,7 +62,7 @@ export function useChatSources(chatId: string | undefined, revision?: unknown): 
     return () => {
       active = false;
     };
-  }, [service, chatId, nonce, revision]);
+  }, [service, chatId, nonce, revision, chatSourcesRevision]);
 
   return { sources, loading, error, reload };
 }

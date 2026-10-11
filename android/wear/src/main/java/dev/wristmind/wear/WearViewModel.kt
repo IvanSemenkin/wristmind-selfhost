@@ -13,6 +13,7 @@ import dev.wristmind.core.ChatSourceCandidate
 import dev.wristmind.core.DeviceConfig
 import dev.wristmind.core.DeviceConfigStore
 import dev.wristmind.core.Mode
+import dev.wristmind.core.PairingCode
 import dev.wristmind.core.ServerEvent
 import dev.wristmind.core.WristMindApiException
 import dev.wristmind.core.WristMindApi
@@ -30,6 +31,8 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job as CoroutineJob
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
 import kotlin.coroutines.coroutineContext
 import org.json.JSONObject
@@ -89,6 +92,9 @@ internal fun processingStageFromServerState(state: String): ProcessingStage? = w
 data class WearState(
     val serverUrl: String = BuildConfig.WRISTMIND_BASE_URL,
     val pairCode: String = "",
+    val generatedPairingCode: PairingCode? = null,
+    val pairingCodeLoading: Boolean = false,
+    val pairingCodeError: String? = null,
     val paired: Boolean = false,
     val stage: ProcessingStage = ProcessingStage.DISCONNECTED,
     val progressOrdinal: Int? = null,
@@ -103,6 +109,7 @@ data class WearState(
     val messagesChatId: String? = null,
     val contentChatId: String? = null,
     val draft: String = "",
+    val serverVoiceAvailable: Boolean = true,
     val answerSearchMode: AnswerSearchMode = AnswerSearchMode.AUTO,
     val pendingQuestion: String = "",
     val pendingBaseMessageId: String? = null,
@@ -265,6 +272,8 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
     private var pushRefreshRunning = false
     private var pushRefreshPending = false
     private var fallbackSyncRunning = false
+    private val offlineChatMigrationMutex = Mutex()
+    private val offlineChatAliases = mutableMapOf<String, Chat>()
     // Diagnostic-only latency marks for one send. They never influence routing,
     // retries, rendering or any user-visible behaviour.
     private var latencySendStartElapsedMs: Long? = null
@@ -272,7 +281,6 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
     private var latencyRequestId: String? = null
     private var latencyFirstSseDeltaMs: Long? = null
     private var latencyFirstVisibleTextMs: Long? = null
-    private var mainRecoverySuccesses = 0
     private val pushStore = WearPushStore(application)
     private var pushSyncPending = false
     private var firstForeground = true
@@ -281,6 +289,8 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
     private var activeSubmitJob: CoroutineJob? = null
     private var cancelRequestedFor: String? = null
     private var cancellingRequest: String? = null
+    private var diagnosticsExportRunning = false
+    private var pairingCodeJob: CoroutineJob? = null
     val state: StateFlow<WearState> = mutableState
 
     init {
@@ -392,26 +402,13 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
         connectionCheckRunning = true
         viewModelScope.launch {
             try {
-                val mainAvailable = runCatching { gateway.health() }.getOrDefault(false)
-                if (mainAvailable) {
-                    mainRecoverySuccesses += 1
+                val status = runCatching { fallbackClient.status() }.getOrNull() ?: return@launch
+                if (status.mainUp) {
+                    mutableState.update { it.copy(vpsConnected = true, fallbackActive = false) }
                     synchronizeFallbackIfNeeded()
-                    val fallbackPending = localStore.offlineChats().isNotEmpty() ||
-                        localStore.fallbackExchanges().isNotEmpty()
-                    mutableState.update {
-                        it.copy(
-                            vpsConnected = true,
-                            fallbackActive = it.fallbackActive && (
-                                mainRecoverySuccesses < MAIN_RECOVERY_CONFIRMATIONS || fallbackPending
-                            ),
-                        )
-                    }
                 } else {
-                    mainRecoverySuccesses = 0
-                    val fallbackAvailable = configStore.fallbackTicket().isNotBlank() &&
-                        runCatching { fallbackClient.health() }.getOrDefault(false)
                     mutableState.update {
-                        it.copy(vpsConnected = fallbackAvailable, fallbackActive = fallbackAvailable)
+                        it.copy(vpsConnected = status.fallbackAvailable, fallbackActive = status.fallbackAvailable)
                     }
                 }
             } finally {
@@ -563,6 +560,8 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
         localStore.saveAnswerSearchMode(next)
         mutableState.update { it.copy(answerSearchMode = next) }
     }
+
+    suspend fun speechStream(body: JSONObject): JSONObject = gateway.speechStream(body)
 
     fun applyRecognizedSpeech(draftBeforeSpeech: String, transcript: String) {
         if (transcript.isBlank()) return
@@ -717,6 +716,71 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
         WearDiagnosticLog.record("send", line)
     }
 
+    fun createDevicePairingCode() {
+        if (pairingCodeJob?.isActive == true) return
+        mutableState.update {
+            it.copy(generatedPairingCode = null, pairingCodeLoading = true, pairingCodeError = null)
+        }
+        pairingCodeJob = viewModelScope.launch {
+            try {
+                val code = withTimeout(35_000L) {
+                    WristMindApi(BuildConfig.WRISTMIND_BASE_URL, token).createPairingCode()
+                }
+                mutableState.update { it.copy(generatedPairingCode = code, pairingCodeLoading = false) }
+            } catch (error: Exception) {
+                if (error is CancellationException && error !is TimeoutCancellationException) throw error
+                val message = if (error is WristMindApiException && error.statusCode == 403) {
+                    "Код доступен только владельцу сервера"
+                } else {
+                    "Не удалось получить код. Повторите попытку"
+                }
+                mutableState.update { it.copy(pairingCodeLoading = false, pairingCodeError = message) }
+            }
+        }
+    }
+
+    fun clearDevicePairingCode() {
+        pairingCodeJob?.cancel()
+        pairingCodeJob = null
+        mutableState.update {
+            it.copy(generatedPairingCode = null, pairingCodeLoading = false, pairingCodeError = null)
+        }
+    }
+
+    fun exportRecentDiagnostics() {
+        if (diagnosticsExportRunning) {
+            Toast.makeText(getApplication(), "Логи уже отправляются", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val lines = WearDiagnosticLog.snapshot()
+        if (lines.isEmpty() || token.isBlank()) {
+            Toast.makeText(getApplication(), "Нет логов для отправки", Toast.LENGTH_SHORT).show()
+            return
+        }
+        diagnosticsExportRunning = true
+        Toast.makeText(getApplication(), "Отправляем логи…", Toast.LENGTH_SHORT).show()
+        viewModelScope.launch {
+            try {
+                withTimeout(35_000L) {
+                    WristMindApi(BuildConfig.WRISTMIND_BASE_URL, token).uploadWearDiagnostics(lines)
+                }
+                Toast.makeText(getApplication(), "Логи отправлены", Toast.LENGTH_SHORT).show()
+            } catch (error: Exception) {
+                if (error is CancellationException && error !is TimeoutCancellationException) throw error
+                Log.w(TAG, "Wear diagnostics export failed: ${error.javaClass.simpleName}")
+                val message = when {
+                    error is WristMindApiException && error.statusCode == 503 -> "Сервер не принимает логи"
+                    error is WristMindApiException && error.statusCode == 422 -> "Логи отклонены сервером"
+                    error is TimeoutCancellationException -> "Отправка логов заняла слишком долго"
+                    else -> "Не удалось отправить логи"
+                }
+                Toast.makeText(getApplication(), message, Toast.LENGTH_SHORT).show()
+            } finally {
+                diagnosticsExportRunning = false
+            }
+        }
+    }
+
     fun selectAnswer(messageId: String) {
         mutableState.update { state ->
             val text = if (messageId == STREAMING_ANSWER_ID) {
@@ -740,6 +804,7 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
     fun selectedAnswer(): String = selectedAnswerContent(mutableState.value)
 
     private fun registerCurrentPushToken() = viewModelScope.launch {
+        if (com.google.firebase.FirebaseApp.getApps(getApplication()).isEmpty()) return@launch
         val token = pushStore.token().ifBlank { FirebaseMessaging.getInstance().token.await() }
         if (token.isNotBlank()) registerPushToken(token)
     }
@@ -786,6 +851,13 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
         refreshFallbackTicket()
         synchronizeFallbackIfNeeded()
         refreshLists()
+        val speechCapabilities = runCatching {
+            withTimeout(4000) { gateway.speechStream(JSONObject().put("session_id", UUID.randomUUID().toString()).put("action", "capabilities")) }
+        }.getOrNull()
+        if (speechCapabilities != null) {
+            val available = !speechCapabilities.optBoolean("selfhost", false) || (speechCapabilities.optJSONObject("features")?.optJSONObject("voice")?.optBoolean("available", false) ?: false)
+            mutableState.update { it.copy(serverVoiceAvailable = available) }
+        }
         val current = mutableState.value
         val restored = localStore.activeChatId()?.takeIf { id -> current.chats.any { it.id == id } }
             ?: current.chats.firstOrNull()?.id
@@ -893,11 +965,12 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun submit(
-        chatId: String,
+        initialChatId: String,
         text: String,
         initialPending: PendingSubmission? = null,
         tappedAt: Long = SystemClock.elapsedRealtime(),
     ) {
+        var chatId = initialChatId
         val startedAt = tappedAt
         // Diagnostic-only: recovery paths enter submit without sendDraft, so make
         // sure a trace start exists even then.
@@ -922,6 +995,20 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
         latencyRequestId = pending.requestId
         runCatching {
             if (pending.jobId == null) {
+                // An offline id is local-only; resolve it before posting a question.
+                val offline = localStore.offlineChats().firstOrNull { it.chatId == chatId }
+                val resolved = offline?.let { migrateOfflineChat(it) } ?: offlineChatAliases[chatId]
+                if (resolved != null) {
+                    chatId = resolved.id
+                    pending = pending.copy(chatId = chatId)
+                    activeSubmission = pending
+                    localStore.savePending(pending)
+                }
+                // Restore earlier fallback turns before the next answer uses server history.
+                localStore.fallbackExchanges().filter { it.chatId == chatId }.forEach { exchange ->
+                    gateway.syncFallbackMessage(chatId, exchange.requestId, exchange.userText, exchange.assistantText)
+                    localStore.removeFallbackExchange(exchange.requestId)
+                }
                 logSendTiming("send_timing request_id=${pending.requestId} event=http_start elapsed_ms=${SystemClock.elapsedRealtime() - startedAt}")
                 val job = sendMessageWithRetry(
                     chatId,
@@ -941,6 +1028,11 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
                     "job_id" to job.id,
                 )
                 logSendTiming("send_timing request_id=${pending.requestId} event=job_accepted elapsed_ms=${SystemClock.elapsedRealtime() - startedAt} job_id=${job.id}")
+            }
+            if (accepted) mutableState.update { current ->
+                if (current.activeChatId == chatId && current.contentChatId == chatId &&
+                    current.stage == ProcessingStage.SENDING
+                ) current.copy(stage = ProcessingStage.WAITING) else current
             }
             if (cancelRequestedFor == pending.requestId && cancelAcceptedSubmission(pending)) {
                 return@runCatching
@@ -1062,12 +1154,13 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
             reconcileChatSummaryInBackground(chatId)
             logSendTiming("answer_total_ms=${SystemClock.elapsedRealtime() - startedAt}")
         }.onFailure { error ->
-            if (error is CancellationException) return@onFailure
+            if (error is CancellationException && error !is TimeoutCancellationException) return@onFailure
             // Once the POST is accepted, a stream timeout says nothing about the
             // job itself: the server can still be producing the answer. Keep the
             // durable outbox and the visible partial text, then ask the job API
             // for the authoritative result in the background.
-            val retryableBeforeAcceptance = !accepted && isRetryableSendFailure(error)
+            val offlinePending = localStore.offlineChats().any { it.chatId == pending.chatId }
+            val retryableBeforeAcceptance = !accepted && !offlinePending && isRetryableSendFailure(error)
             WearAnswerTrace.log(
                 "submit_failed",
                 "request_id" to pending.requestId,
@@ -1089,7 +1182,7 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
                 retryableBeforeAcceptance -> pending.copy(state = SubmissionState.QUEUED)
                 else -> pending.copy(state = SubmissionState.FAILED)
             }
-            if (retryableBeforeAcceptance && tryFallbackAnswer(retainedPending)) {
+            if ((retryableBeforeAcceptance || (offlinePending && isRetryableSendFailure(error))) && tryFallbackAnswer(retainedPending)) {
                 return@onFailure
             }
             localStore.savePending(retainedPending)
@@ -1249,11 +1342,7 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
             throw checkNotNull(lastFailure)
         }
 
-    private fun isRetryableSendFailure(error: Throwable): Boolean = when (error) {
-        is IOException, is TimeoutCancellationException -> true
-        is WristMindApiException -> error.statusCode == 408 || error.statusCode == 429 || error.statusCode >= 500
-        else -> false
-    }
+    private fun isRetryableSendFailure(error: Throwable) = WearRetryPolicy.isRetryable(error)
 
     private suspend fun refreshFallbackTicket() {
         runCatching { gateway.fallbackTicket() }
@@ -1265,7 +1354,6 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
         configStore.fallbackTicket().isNotBlank() && runCatching { fallbackClient.health() }.getOrDefault(false)
 
     private fun markFallbackAvailable() {
-        mainRecoverySuccesses = 0
         mutableState.update {
             it.copy(vpsConnected = true, fallbackActive = true, stage = ProcessingStage.READY, error = null)
         }
@@ -1285,7 +1373,6 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
         localStore.saveOfflineChat(
             OfflineChat(chatId, mode?.id.orEmpty(), modeName, requestId, quick),
         )
-        mainRecoverySuccesses = 0
         mutableState.update { it.copy(vpsConnected = true, fallbackActive = true, error = null) }
         return chat
     }
@@ -1307,7 +1394,6 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
             ?: localStore.cachedModes().firstOrNull { it.id == chat.modeId }
         val cachedMessages = if (current.messagesChatId == pending.chatId) current.messages
             else localStore.messages(pending.chatId)
-        mainRecoverySuccesses = 0
         mutableState.update {
             it.copy(
                 vpsConnected = true,
@@ -1347,25 +1433,12 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun synchronizeFallbackIfNeeded() {
-        if (fallbackSyncRunning) return
+        if (fallbackSyncRunning || activeSubmitJob?.isActive == true) return
         if (localStore.offlineChats().isEmpty() && localStore.fallbackExchanges().isEmpty()) return
         fallbackSyncRunning = true
         try {
             localStore.offlineChats().forEach { offline ->
-                val serverChat = if (offline.quick) {
-                    gateway.createQuickChat(offline.createRequestId)
-                } else {
-                    gateway.createChat(offline.modeId, offline.createRequestId)
-                }
-                localStore.migrateChat(offline.chatId, serverChat)
-                mutableState.update { state ->
-                    state.copy(
-                        chats = state.chats.map { if (it.id == offline.chatId) serverChat else it },
-                        activeChatId = if (state.activeChatId == offline.chatId) serverChat.id else state.activeChatId,
-                        messagesChatId = if (state.messagesChatId == offline.chatId) serverChat.id else state.messagesChatId,
-                        contentChatId = if (state.contentChatId == offline.chatId) serverChat.id else state.contentChatId,
-                    )
-                }
+                migrateOfflineChat(offline)
             }
             localStore.fallbackExchanges().forEach { exchange ->
                 gateway.syncFallbackMessage(
@@ -1381,6 +1454,24 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
         } finally {
             fallbackSyncRunning = false
         }
+    }
+
+    private suspend fun migrateOfflineChat(offline: OfflineChat): Chat = offlineChatMigrationMutex.withLock {
+        offlineChatAliases[offline.chatId]?.let { return@withLock it }
+        val serverChat = if (offline.quick) gateway.createQuickChat(offline.createRequestId)
+            else gateway.createChat(offline.modeId, offline.createRequestId)
+        localStore.migrateChat(offline.chatId, serverChat)
+        offlineChatAliases[offline.chatId] = serverChat
+        activeSubmission = activeSubmission?.let { if (it.chatId == offline.chatId) it.copy(chatId = serverChat.id) else it }
+        mutableState.update { state ->
+            state.copy(
+                chats = state.chats.map { if (it.id == offline.chatId) serverChat else it },
+                activeChatId = if (state.activeChatId == offline.chatId) serverChat.id else state.activeChatId,
+                messagesChatId = if (state.messagesChatId == offline.chatId) serverChat.id else state.messagesChatId,
+                contentChatId = if (state.contentChatId == offline.chatId) serverChat.id else state.contentChatId,
+            )
+        }
+        serverChat
     }
 
     private fun handleFailure(error: Throwable, keepPendingQuestion: Boolean = false) {
@@ -1856,7 +1947,6 @@ class WearViewModel(application: Application) : AndroidViewModel(application) {
         const val MAX_ACCEPTED_RECOVERY_PROBES = 15
         const val MAX_QUEUED_RECOVERY_PROBES = 5
         const val FALLBACK_HISTORY_MESSAGES = 6
-        const val MAIN_RECOVERY_CONFIRMATIONS = 2
         val QUEUED_RECOVERY_DELAYS_MS = longArrayOf(2_000, 4_000, 8_000, 12_000, 18_000)
         val RESUMABLE_SUBMISSION_STATES = setOf(
             SubmissionState.QUEUED,

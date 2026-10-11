@@ -21,6 +21,16 @@
   border: 1px solid var(--border-default);
   box-shadow: var(--shadow-lg);
   animation: toastIn var(--duration-slow) var(--ease-spring);
+  /* Horizontal drags belong to the toast; vertical ones still scroll the page. */
+  touch-action: pan-y;
+  transition:
+    transform var(--duration-fast) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out);
+}
+
+/* While a finger is down the toast tracks it exactly — no easing, no lag. */
+.toast[data-dragging] {
+  transition: none;
 }
 
 @keyframes toastIn {

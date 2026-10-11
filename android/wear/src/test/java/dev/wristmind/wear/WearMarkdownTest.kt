@@ -11,6 +11,46 @@ import org.junit.Test
 
 class WearMarkdownTest {
     @Test
+    fun calloutLabelAndBodyRemainOneBlock() {
+        assertEquals(
+            listOf(MarkdownBlock.Callout("Ответ", "", listOf(MarkdownBlock.Paragraph("126 чисел.")))),
+            parseMarkdown("> [Ответ]\n> 126 чисел."),
+        )
+        assertEquals("Ответ 126 чисел.", previewPlainText("> [Ответ]\n> 126 чисел."))
+    }
+
+    @Test
+    fun calloutPreservesParagraphsListsAndDisplayFractions() {
+        val block = parseMarkdown("> [Важно] ОДЗ\n> Знаменатель не равен нулю.\n>\n> - Проверить x\n> \\[\\frac{a^2+b^2}{2ab}\\]").single() as MarkdownBlock.Callout
+        assertEquals("Важно", block.type)
+        assertEquals("ОДЗ", block.title)
+        assertEquals(3, block.content.size)
+        assertTrue(block.content[1] is MarkdownBlock.ListItem)
+        assertTrue(block.content[2] is MarkdownBlock.Math)
+    }
+
+    @Test
+    fun adjacentStreamingAndUnknownCalloutsKeepTheirContent() {
+        assertEquals(2, parseMarkdown("> [Подсказка]\n> Проверка\n> [Ответ]\n> 5").size)
+        assertEquals(MarkdownBlock.Callout("Ответ", "", emptyList()), parseMarkdown("> [Ответ]").single())
+        assertEquals(MarkdownBlock.Quote("[Неизвестно]\nТекст"), parseMarkdown("> [Неизвестно]\n> Текст").single())
+        assertEquals(MarkdownBlock.Code("> [Ответ]\n> 5"), parseMarkdown("```\n> [Ответ]\n> 5\n```").single())
+    }
+
+    @Test
+    fun longFractionsDoNotDegradeToSlashBecauseOfTheirLength() {
+        val numerator = "9 \\cdot 8 \\cdot 7 \\cdot 6"
+        val denominator = "4 \\cdot 3 \\cdot 2 \\cdot 1"
+        val source = "C_9^4 = \\frac{$numerator}{$denominator} = 126"
+        assertEquals(StackedFraction("C_9^4 =", numerator, denominator, "= 126"), stackedFraction(source))
+        assertEquals(listOf(MarkdownBlock.Math(source)), parseMarkdown("\\($source\\)"))
+        assertEquals(StackedFraction("", "9·8·7·6", "4·3·2·1", "=126"), stackedFraction("(9·8·7·6)/(4·3·2·1)=126"))
+        assertEquals(null, stackedFraction("Сайт (foo)/(bar)"))
+        assertEquals(null, stackedFraction("\\frac{\\frac{a}{b}}{c}"))
+        assertEquals(null, stackedFraction("\\frac{a}{"))
+    }
+
+    @Test
     fun parsesReadableBlocksForSingleScrollableAnswer() {
         val blocks = parseMarkdown(
             """
@@ -58,6 +98,38 @@ class WearMarkdownTest {
             inlineMarkdown("\\( Q = 230 \\cdot 2 \\cdot 290 = 133400 \\) Дж.").text,
         )
         assertEquals("F = ma", inlineMarkdown("\\[ F = ma \\]").text)
+    }
+
+    @Test
+    fun rendersMathInsideEmphasisAsInWatchAnswers() {
+        assertEquals(
+            "Случай 2: a = 4. Корень x = -4 не подходит.",
+            inlineMarkdown("**Случай 2: \\(a = 4\\)**. Корень \\(x = -4\\) не подходит.").text,
+        )
+        assertEquals(
+            "Случай 3: a ≠ 0 и a ≠ 5.",
+            inlineMarkdown("**Случай 3: \\(a \\neq 0\\) и \\(a \\neq 5\\)**.").text,
+        )
+        assertEquals(
+            "λ = 3,4·10⁵",
+            inlineMarkdown("**\$\\lambda = 3{,}4\\cdot10^5\$**").text,
+        )
+        assertEquals("x²", inlineMarkdown("*\$x^2\$*").text)
+    }
+
+    @Test
+    fun aShortStandaloneFractionUsesAStackedWearBlock() {
+        val source = "\\(x = \\frac{a^2+b^2}{2ab}\\)"
+        assertEquals(
+            listOf(MarkdownBlock.Math("x = \\frac{a^2+b^2}{2ab}")),
+            parseMarkdown(source),
+        )
+        assertEquals(
+            StackedFraction("x =", "a^2+b^2", "2ab", ""),
+            stackedFraction("x = \\frac{a^2+b^2}{2ab}"),
+        )
+        assertEquals("(a² + b²)⁄2ab", mathDisplay("\\dfrac{a^2 + b^2}{2ab}"))
+        assertEquals(null, stackedFraction("x = \\frac{a}{b} + \\frac{c}{d}"))
     }
 
     // --- Tables -----------------------------------------------------------------

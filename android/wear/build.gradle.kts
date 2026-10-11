@@ -4,16 +4,18 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
-    id("com.google.gms.google-services")
+    id("com.google.gms.google-services") apply false
 }
 
 val localProperties = Properties().apply {
     val file = rootProject.file("local.properties")
     if (file.exists()) file.inputStream().use(::load)
 }
+if (file("google-services.json").exists()) apply(plugin = "com.google.gms.google-services")
+
 val wristmindBaseUrl = localProperties.getProperty(
     "wristmind.baseUrl",
-    "https://wm.xspase.ru/",
+    "https://server.example.invalid/",
 )
 
 android {
@@ -24,10 +26,24 @@ android {
         applicationId = "dev.wristmind.app"
         minSdk = 30
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
         buildConfigField("String", "WRISTMIND_BASE_URL", "\"$wristmindBaseUrl\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (localProperties.getProperty("wristmind.signing.storeFile") != null) {
+            create("selfhost") {
+                storeFile = rootProject.file(localProperties.getProperty("wristmind.signing.storeFile"))
+                storePassword = localProperties.getProperty("wristmind.signing.storePassword")
+                keyAlias = localProperties.getProperty("wristmind.signing.keyAlias")
+                keyPassword = localProperties.getProperty("wristmind.signing.keyPassword")
+            }
+        }
+    }
+    buildTypes.getByName("release") {
+        signingConfig = signingConfigs.findByName("selfhost")
     }
 
     buildFeatures {
@@ -48,6 +64,11 @@ android {
 }
 
 dependencies {
+    constraints {
+        implementation("androidx.fragment:fragment:1.8.6") {
+            because("Play services requests 1.1.0, incompatible with the ActivityResult API")
+        }
+    }
     implementation(project(":core"))
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.compose.foundation:foundation:1.8.3")

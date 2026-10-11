@@ -1,0 +1,112 @@
+name: ${WRISTMIND_PROJECT_NAME:-wristmind-selfhost}
+
+x-backend: &backend
+  image: ${WRISTMIND_IMAGE:-wristmind-selfhost:local}
+  build:
+    context: .
+    dockerfile: selfhost/Dockerfile
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  environment: &backend-environment
+    WRISTMIND_ENVIRONMENT: production
+    WRISTMIND_SELFHOST_ENABLED: "true"
+    WRISTMIND_SELFHOST_SETUP_TOKEN: ${WRISTMIND_SELFHOST_SETUP_TOKEN:-}
+    WRISTMIND_DATABASE_URL: postgresql+asyncpg://wristmind:${POSTGRES_PASSWORD:?generate POSTGRES_PASSWORD}@db:5432/wristmind
+    WRISTMIND_STORAGE_DIR: /data/private
+    WRISTMIND_BOOTSTRAP_SECRET: ${WRISTMIND_BOOTSTRAP_SECRET:?generate WRISTMIND_BOOTSTRAP_SECRET}
+    WRISTMIND_TOKEN_PEPPER: ${WRISTMIND_TOKEN_PEPPER:?generate WRISTMIND_TOKEN_PEPPER}
+    WRISTMIND_PUBLIC_BASE_URL: ${WRISTMIND_PUBLIC_BASE_URL:-http://localhost:8080}
+    WRISTMIND_CORS_ORIGINS: ${WRISTMIND_CORS_ORIGINS:-[]}
+    WRISTMIND_MOCK_PROVIDERS: ${WRISTMIND_MOCK_PROVIDERS:-false}
+    WRISTMIND_SEARXNG_URL: ${WRISTMIND_SEARXNG_URL:-}
+  volumes:
+    - private_files:/data/private
+  depends_on:
+    db:
+      condition: service_healthy
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  db:
+    image: ${WRISTMIND_DATABASE_IMAGE:-pgvector/pgvector:pg16}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wristmind
+      POSTGRES_USER: wristmind
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?generate POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U wristmind -d wristmind]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    <<: *backend
+    ports:
+      - "${WRISTMIND_BIND_ADDRESS:-127.0.0.1}:${WRISTMIND_HTTP_PORT:-8080}:8000"
+    environment:
+      <<: *backend-environment
+      WRISTMIND_WEB_DIST: /app/web-dist
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  worker:
+    <<: *backend
+    command: [python, -m, wristmind_server.worker]
+
+  searxng:
+    profiles: [search]
+    image: ${WRISTMIND_SEARCH_IMAGE:-searxng/searxng:latest}
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-}
+    volumes:
+      - ./selfhost/search/settings.yml:/etc/searxng/settings.yml:ro
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+  telegram-bot:
+    <<: *backend
+    profiles: [telegram]
+    command: [python, -m, wristmind_server.telegram_polling]
+
+  ollama:
+    profiles: [local-ai]
+    image: ${WRISTMIND_OLLAMA_IMAGE:-ollama/ollama:latest}
+    restart: unless-stopped
+    environment:
+      OLLAMA_NUM_PARALLEL: '1'
+      OLLAMA_MAX_LOADED_MODELS: '1'
+      OLLAMA_KEEP_ALIVE: 2m
+      OLLAMA_NO_CLOUD: '1'
+    volumes: [local_models:/root/.ollama]
+    healthcheck:
+      test: [CMD, ollama, list]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    security_opt: [no-new-privileges:true]
+
+
+volumes:
+  postgres_data:
+  private_files:
+  local_models:

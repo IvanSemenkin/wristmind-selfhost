@@ -2,22 +2,18 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from '@/app/router';
 import {
   AlertTriangle,
-  ArrowLeft,
   ChevronLeft,
   ChevronRight,
-  Eye,
   FileImage,
   FileText,
-  Layers,
   RefreshCw,
-  ScanLine,
   Search,
   Trash2,
 } from 'lucide-react';
 import { useActions } from '@/services';
 import { useMode, useSource, useSourceContent } from '@/store';
-import { PROCESSING_MODE_LABELS, sourceKind, type KnowledgeSource } from '@/types';
-import { formatDateTime, formatNumber, formatRelativeTime } from '@/lib/format';
+import { sourceKind, type KnowledgeSource } from '@/types';
+import { formatDateTime, formatNumber } from '@/lib/format';
 import {
   Badge,
   Button,
@@ -34,7 +30,6 @@ import {
   useToast,
 } from '@/components';
 import { SourceStatusBadge } from '@/components/Entities';
-import { sourceTimestamp } from './SourcesTable';
 import styles from './Knowledge.module.css';
 
 export function SourceDetailPage() {
@@ -55,7 +50,6 @@ export function SourceDetailPage() {
   }, [sourceId]);
 
   const pages = content?.pages ?? [];
-  const chunks = content?.chunks ?? [];
   const currentPage = pages[Math.min(pageIndex, Math.max(0, pages.length - 1))];
 
   const matchingPages = useMemo(() => {
@@ -63,11 +57,6 @@ export function SourceDetailPage() {
     if (!q) return null;
     return new Set(pages.filter((page) => page.text.toLowerCase().includes(q)).map((p) => p.index));
   }, [pages, query]);
-
-  const pageChunks = useMemo(
-    () => (currentPage ? chunks.filter((chunk) => chunk.page === currentPage.index) : []),
-    [chunks, currentPage],
-  );
 
   const highlight = (text: string) => {
     const q = query.trim();
@@ -134,13 +123,8 @@ export function SourceDetailPage() {
 
         actions={
           <>
-            <Button
-              variant="secondary" iconLeft={<ArrowLeft />}
-              onClick={() => navigate('/knowledge')}
-              className={styles.backButton}
-            >
-              Назад
-            </Button>
+            {/* No separate "Назад": the breadcrumb above is the way back, and a
+                text button beside the destructive actions read as one of them. */}
             <Button
               variant="secondary" iconLeft={<RefreshCw />}
               onClick={() => handleReprocess(source)}
@@ -158,24 +142,15 @@ export function SourceDetailPage() {
         }
         below={
           <div className={styles.detailBadges}>
+            {/* Only what is not already on the properties panel: the current
+                state and which mode the source belongs to. */}
             <SourceStatusBadge status={source.status} />
-            <Badge tone="neutral" size="sm" icon={kind === 'image' ? <FileImage /> : <FileText />}>
-              {kind === 'image' ? 'Изображение' : 'PDF'}
-            </Badge>
-            <Badge
-              tone="neutral" size="sm" icon={source.processing_mode === 'VISION' ? <Eye /> : <ScanLine />}
-            >
-              {PROCESSING_MODE_LABELS[source.processing_mode]}
-            </Badge>
             {mode && (
               <Badge tone="neutral" size="sm" data-mode-color={mode.color}>
                 <span className={styles.badgeDot} />
                 {mode.name}
               </Badge>
             )}
-            <span className={styles.detailMeta}>
-              Обновлён {formatRelativeTime(sourceTimestamp(source))}
-            </span>
           </div>
         }
       />
@@ -254,6 +229,7 @@ export function SourceDetailPage() {
           ) : (
             <div className={styles.viewer}>
               <nav className={styles.pageRail} aria-label="Страницы">
+                <div className={styles.pageRailList}>
                 <div className={styles.pageRailLabel}>
                   Страницы
                   {matchingPages && (
@@ -275,6 +251,7 @@ export function SourceDetailPage() {
                     </span>
                   </button>
                 ))}
+                </div>
               </nav>
 
               <div className={styles.pageBody}>
@@ -299,27 +276,6 @@ export function SourceDetailPage() {
                 </div>
 
                 <article className={styles.pageText}>{highlight(currentPage?.text ?? '')}</article>
-
-                <div className={styles.chunkSection}>
-                  <div className={styles.chunkSectionLabel}>
-                    <Layers />
-                    Фрагменты страницы ({pageChunks.length})
-                  </div>
-                  <ul className={styles.chunkList}>
-                    {pageChunks.map((chunk) => (
-                      <li key={chunk.id} className={styles.chunk}>
-                        <div className={styles.chunkHead}>
-                          <span className={styles.chunkIndex}>#{chunk.index + 1}</span>
-                          <span className={styles.chunkTokens}>{chunk.tokens} токенов</span>
-                        </div>
-                        <p className={styles.chunkText}>{highlight(chunk.text)}</p>
-                      </li>
-                    ))}
-                    {pageChunks.length === 0 && (
-                      <li className={styles.chunkEmpty}>На этой странице нет фрагментов</li>
-                    )}
-                  </ul>
-                </div>
               </div>
             </div>
           )}

@@ -54,6 +54,7 @@ export function Select<T extends string>({
     label: option.label,
     description: option.description,
     icon: option.icon,
+    shortcut: option.meta,
     checked: option.value === value,
     onSelect: () => onChange(option.value),
   });
@@ -68,7 +69,7 @@ export function Select<T extends string>({
   return (
     <div ref={anchor} className={cn(styles.wrap, className)}>
       <Menu
-        align="start" width={menuWidth}
+        align="start" width={menuWidth} variant="select"
         onOpenChange={(open) => {
           if (open) setMenuWidth(Math.max(anchor.current?.offsetWidth ?? 0, 220));
         }}

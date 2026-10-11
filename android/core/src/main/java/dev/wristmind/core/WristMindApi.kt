@@ -22,6 +22,8 @@ import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
+data class ServerStatus(val mainUp: Boolean, val fallbackAvailable: Boolean)
+
 class WristMindApi(
     baseUrl: String,
     private val token: String? = null,
@@ -35,8 +37,13 @@ class WristMindApi(
         }
     }
 
+    suspend fun speechStream(body: JSONObject): JSONObject = request("/v1/stt/stream", "POST", body)
+
     suspend fun health(): Boolean = request("/health").optString("status") == "ok"
 
+    suspend fun uploadWearDiagnostics(lines: List<String>) {
+        request("/v1/diagnostics/wear", "POST", JSONObject().put("lines", JSONArray(lines)))
+    }
 
     suspend fun enrollAdmin(name: String, bootstrapSecret: String): DeviceToken {
         val body = JSONObject().put("name", name).put("kind", "PHONE")
@@ -167,6 +174,13 @@ class WristMindApi(
 
     suspend fun fallbackHealth(): Boolean =
         request("/fallback/health").optString("status") == "ok"
+
+    suspend fun serverStatus(): ServerStatus = request("/fallback/status").let { json ->
+        ServerStatus(
+            mainUp = json.getString("main") == "up",
+            fallbackAvailable = json.getString("fallback") == "ok",
+        )
+    }
 
     suspend fun fallbackRespond(
         requestId: String,

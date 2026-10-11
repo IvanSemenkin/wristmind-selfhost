@@ -49,14 +49,15 @@
   display: flex;
   align-items: center;
   gap: var(--space-4);
-  background: var(--bg-inset);
-  border: 1px solid var(--border-default);
+  /* A filled field keeps its own visible edge: on a panel the fill alone is one
+     tone step lighter, and the control disappears without an outline. */
+  background: var(--bg-surface-raised);
+  border: 1px solid var(--border-field);
   border-radius: var(--radius-md);
   padding-inline: var(--space-5);
   transition:
     border-color var(--duration-fast) var(--ease-out),
-    background-color var(--duration-fast) var(--ease-out),
-    box-shadow var(--duration-fast) var(--ease-out);
+    background-color var(--duration-fast) var(--ease-out);
   min-width: 0;
 }
 
@@ -72,13 +73,19 @@
   height: 38px;
 }
 
+/* Hover and focus brighten the edge monotonically: the field outline is already
+   stronger than the elevation hairlines, so stepping back to those would read as
+   the control fading out rather than responding. */
 .control:hover:not([data-disabled]) {
-  border-color: var(--border-strong);
+  border-color: var(--text-muted);
 }
 
+/* The inner input suppresses its own outline, so this wrapper owns the focus
+   indicator — and it has to be visible: #b4b4b4 on the dark canvas is ~7.8:1,
+   well past the 3:1 a focus ring needs. Neutral, like ChatGPT's focused
+   composer, rather than a blue ring. */
 .control:focus-within {
-  border-color: var(--accent);
-  background: var(--bg-surface);
+  border-color: var(--text-secondary);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
@@ -87,6 +94,7 @@
 }
 
 .control[data-invalid]:focus-within {
+  border-color: var(--danger);
   box-shadow: 0 0 0 3px var(--danger-soft);
 }
 
@@ -154,7 +162,9 @@
   background: none;
   border: none;
   outline: none;
-  resize: vertical;
+  /* No drag corner: a class selector beats the global `textarea` rule, so this
+     is the declaration that actually decides it. */
+  resize: none;
   font-size: var(--text-base);
   line-height: var(--leading-normal);
   color: var(--text-primary);
@@ -263,7 +273,10 @@
 }
 
 .switch[data-checked] .switchThumb {
-  background: #fff;
+  /* Inverted ink, like every other active control: a light track with a dark
+     knob. A hardcoded white knob on the white track made the switch read as a
+     solid blob with no visible position. */
+  background: var(--accent-contrast);
 }
 
 .switch[data-size='md'][data-checked] .switchThumb {

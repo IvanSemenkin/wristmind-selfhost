@@ -11,20 +11,24 @@ import dev.wristmind.core.FallbackTicket
 import dev.wristmind.core.Job
 import dev.wristmind.core.Mode
 import dev.wristmind.core.ServerEvent
+import dev.wristmind.core.ServerStatus
 import dev.wristmind.core.WristMindApi
 import kotlinx.coroutines.flow.Flow
 import okhttp3.Call
 import okhttp3.Connection
+import okhttp3.ConnectionPool
 import okhttp3.EventListener
 import okhttp3.OkHttpClient
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.io.IOException
 import java.net.Proxy
 import java.util.concurrent.TimeUnit
 
 internal const val WEAR_HISTORY_PAGE_SIZE = 60
 
 interface WearGateway {
+    suspend fun speechStream(body: org.json.JSONObject): org.json.JSONObject = throw UnsupportedOperationException("Speech streaming unavailable")
     suspend fun health(): Boolean
     suspend fun enroll(code: String): DeviceToken
     suspend fun registerPushToken(token: String)
@@ -36,6 +40,8 @@ interface WearGateway {
     suspend fun deleteChat(chatId: String)
     suspend fun messages(chatId: String): List<ChatMessage>
     suspend fun sendMessage(chatId: String, requestId: String, text: String, webSearch: Boolean, webResearch: Boolean = false, researchMode: Boolean = false): Job
+    suspend fun recoverSendMessage(chatId: String, requestId: String, text: String, webSearch: Boolean, webResearch: Boolean, researchMode: Boolean): Job =
+        sendMessage(chatId, requestId, text, webSearch, webResearch, researchMode)
     suspend fun syncFallbackMessage(chatId: String, requestId: String, userText: String, assistantText: String): String
     suspend fun job(jobId: String): Job
     suspend fun cancelJob(jobId: String): Job
@@ -107,6 +113,14 @@ class DirectWearGateway(
     private fun createAuthorized() = WristMindApi(baseUrl(), token(), createClient)
     private fun streamingAuthorized() = WristMindApi(baseUrl(), token(), streamingClient)
 
+    private val speechClient = interactiveClient.newBuilder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(40, TimeUnit.SECONDS)
+        .build()
+
+    override suspend fun speechStream(body: org.json.JSONObject) = WristMindApi(baseUrl(), token(), speechClient).speechStream(body)
+
     override suspend fun health() = WristMindApi(baseUrl(), client = interactiveClient).health()
 
     override suspend fun enroll(code: String) = WristMindApi(baseUrl(), client = interactiveClient).enrollWatch(
@@ -126,6 +140,25 @@ class DirectWearGateway(
     override suspend fun messages(chatId: String) = authorized().messages(chatId, WEAR_HISTORY_PAGE_SIZE)
     override suspend fun sendMessage(chatId: String, requestId: String, text: String, webSearch: Boolean, webResearch: Boolean, researchMode: Boolean) =
         sendAuthorized().sendMessage(chatId, requestId, text, webSearch, webResearch, researchMode)
+    override suspend fun recoverSendMessage(chatId: String, requestId: String, text: String, webSearch: Boolean, webResearch: Boolean, researchMode: Boolean): Job {
+        // Recover a lost POST response without reusing the stalled HTTP/2 connection.
+        // The same request ID lets the server return the job it already accepted.
+        val recoveryClient = sendClient.newBuilder()
+            .connectionPool(ConnectionPool())
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.SECONDS)
+            .writeTimeout(5, TimeUnit.SECONDS)
+            .callTimeout(5, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(false)
+            .build()
+        return try {
+            WristMindApi(baseUrl(), token(), recoveryClient)
+                .sendMessage(chatId, requestId, text, webSearch, webResearch, researchMode)
+        } finally {
+            recoveryClient.connectionPool.evictAll()
+        }
+    }
+
     override suspend fun syncFallbackMessage(chatId: String, requestId: String, userText: String, assistantText: String) =
         sendAuthorized().syncFallbackMessage(chatId, requestId, userText, assistantText)
 
@@ -161,6 +194,8 @@ class FallbackWearClient(
         .build()
 
     suspend fun health(): Boolean = WristMindApi(baseUrl(), client = healthClient).fallbackHealth()
+
+    suspend fun status(): ServerStatus = WristMindApi(baseUrl(), client = healthClient).serverStatus()
 
     suspend fun respond(
         requestId: String,
@@ -212,4 +247,10 @@ internal object WearRetryPolicy {
     const val SEND_RETRY_DELAY_MS = 1_000L
     const val MAX_STREAM_RECONNECTS = 3
     val BACKOFF_MS = longArrayOf(500, 1_000, 2_000)
+
+    fun isRetryable(error: Throwable): Boolean = when (error) {
+        is dev.wristmind.core.WristMindApiException -> error.statusCode == 408 || error.statusCode == 429 || error.statusCode >= 500
+        is IOException, is kotlinx.coroutines.TimeoutCancellationException -> true
+        else -> false
+    }
 }
