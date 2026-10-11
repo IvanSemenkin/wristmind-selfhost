@@ -511,3 +511,8 @@ Söhne, `#343541`); актуальная поверхность монохром
 ## SelfHost companion setup (stage 7)
 
 The companion remains infrastructure UI without a second chat surface. Use the existing graphite/Signal Blue palette, flat backgrounds and Material 3 fields with at least 48dp action targets. The setup wizard shows one task per screen, explains the distinction between website enrollment and watch ADB pairing, and separates pairing/connect ports. Compact progress describes the current operation; failures stay on the current step with retry. Explain ADB authority honestly and recommend disabling debugging after installation. A completion state requires an acknowledgement from the intended watch after server authentication, not merely sending a configuration packet.
+
+
+### SelfHost: единая точка терминальной настройки
+
+Все пользовательские инструкции сервера и подсказки панели ведут к install.sh и именованному пункту меню. Не показывать отдельные команды с фиксированным каталогом /opt/wristmind. Каталог выбирается при открытии меню, порт/демо — при новой установке; интерфейс веба не выполняет shell-команды сам.

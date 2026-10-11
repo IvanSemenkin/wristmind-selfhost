@@ -72,6 +72,33 @@ class CliTest(unittest.TestCase):
         self.assertIn('Docker Compose', result.stderr)
         self.assertFalse(self.install.exists())
 
+    def test_interactive_install_collects_port_and_demo_without_shell_flags(self):
+        import pty
+        copy = self.root / 'source'
+        (copy / 'selfhost').mkdir(parents=True)
+        import shutil
+        shutil.copy2(ROOT / 'wristmind', copy / 'wristmind')
+        calls = self.root / 'arguments'
+        (copy / 'selfhost/installer.py').write_text(
+            "import json,sys\nfrom pathlib import Path\n"
+            "if sys.argv[1] == 'state': print('new')\n"
+            "elif sys.argv[1] == 'install': Path(" + repr(str(calls)) + ").write_text(json.dumps(sys.argv[1:]))\n")
+        master, slave = pty.openpty()
+        try:
+            process = subprocess.Popen(['bash', str(copy / 'wristmind'), 'menu', '--install-dir', str(self.install)],
+                env=self.env, stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            os.close(slave)
+            os.write(master, b'3\n9090\n2\nn\n0\n')
+            out, err = process.communicate(timeout=15)
+            self.assertEqual(process.returncode, 0, err.decode())
+            import json
+            args = json.loads(calls.read_text())
+            self.assertEqual(args[args.index('--port')+1], '9090')
+            self.assertIn('--demo', args)
+            self.assertFalse(self.install.exists())
+        finally:
+            os.close(master)
+
     def test_noninteractive_menu_never_hangs(self):
         result = self.run_cli('menu')
         self.assertEqual(result.returncode, 0)

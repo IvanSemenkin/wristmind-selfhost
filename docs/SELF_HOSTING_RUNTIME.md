@@ -1,5 +1,11 @@
 # Пользовательская установка — конфигурация и запуск
 
+Запустите единое меню на сервере и укажите каталог установленной системы:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/IvanSemenkin/wristmind-selfhost/main/install.sh)
+```
+
 Авторитетные файлы этой копии: корневой `compose.yaml`, `selfhost/Dockerfile`, `.env.example`. Старый `server/compose.yaml` сохранён как историческая конфигурация исходной установки и не используется новым сценарием.
 
 ## Доставка
@@ -28,7 +34,7 @@ Docker Engine, Docker Compose plugin не ниже 2.24 (optional env_file), Lin
 
 - Поиск: профиль `search`, WRISTMIND_SEARXNG_URL=http://searxng:8080 и уникальный SEARXNG_SECRET. SearXNG не публикует порт хоста. Включения профиля без этих настроек недостаточно для работающего поиска.
 - Telegram: профиль `telegram`, WRISTMIND_TELEGRAM_BOT_TOKEN и WRISTMIND_TELEGRAM_OWNER_ID. Ключи заданы только в .env, контейнер использует тот же образ и том источников. Пока нет проверяющего настройки мастера.
-- Домен/HTTPS и Cloudflare Tunnel подключаются командой `wristmind access` через отдельный Compose override. См. [SELF_HOSTING_ACCESS.md](SELF_HOSTING_ACCESS.md). Универсальная конфигурация не наследует частную маршрутизацию VPN/iptables исходной установки.
+- Домен/HTTPS и Cloudflare Tunnel подключаются пунктом 4 меню через отдельный Compose override. См. [SELF_HOSTING_ACCESS.md](SELF_HOSTING_ACCESS.md). Универсальная конфигурация не наследует частную маршрутизацию VPN/iptables исходной установки.
 - Старый Android assetlinks.json удаляется из веб-сборки образа: подтверждение конкретного домена/подписи относится к будущему этапу приложений.
 
 ## Границы проверки
@@ -37,4 +43,4 @@ Compose config проверяется без доступа к Docker daemon. Л
 
 ### Автоматический поиск в установках
 
-Исходный Compose оставляет search отдельным профилем. Сам установщик теперь автоматически записывает COMPOSE_PROFILES=search, внутренний URL и случайный секрет в защищённый .env, поэтому обычная готовая установка запускает db/api/worker/searxng. Новый install-release использует ту же подготовку. Для старой установки доступна команда web-search; дополнительные профили сохраняются.
+Исходный Compose оставляет search отдельным профилем. Сам установщик теперь автоматически записывает COMPOSE_PROFILES=search, внутренний URL и случайный секрет в защищённый .env, поэтому обычная готовая установка запускает db/api/worker/searxng. Новый install-release использует ту же подготовку. Для старой установки доступен пункт 8 меню; дополнительные профили сохраняются.

@@ -171,14 +171,17 @@ maintenance() {
 }
 maintenance_menu() {
   local action package checksum project
-  echo '1) Версия  2) Обновить из пакета  3) Бэкап  4) Восстановить бэкап  5) Откат  6) Удалить контейнеры (данные сохранятся)  0) Назад'
+  echo '1) Версия  2) Обновить из пакета  3) Бэкап  4) Восстановить бэкап  5) Откат  6) Удалить контейнеры (данные сохранятся)  7) Установить из готового пакета  0) Назад'
   read -r -p '> ' action || return 0
   case $action in
     1) maintenance version;;
-    2|4)
+    2|4|7)
       read -r -p 'Путь к пакету: ' package || return 0
       read -r -p 'SHA256 из доверенного источника: ' checksum || return 0
       if [[ $action == 2 ]]; then maintenance update --package "$package" --sha256 "$checksum"
+      elif [[ $action == 7 ]]; then
+        if [[ $(state) == incomplete ]]; then WM_RESUME=true; fi
+        maintenance install-release --package "$package" --sha256 "$checksum"
       else
         echo 'Восстановление заменит нынешние данные состоянием из бэкапа.'
         read -r -p 'Имя проекта для подтверждения: ' project || return 0
@@ -190,8 +193,24 @@ maintenance_menu() {
       read -r -p 'Имя проекта для подтверждения: ' project || return 0
       if [[ $action == 5 ]]; then maintenance rollback --confirm-project "$project"
       else maintenance remove --confirm-project "$project"; fi;;
-    0) return 0;; *) echo 'Выберите 0–6.'; return 2;;
+    0) return 0;; *) echo 'Выберите 0–7.'; return 2;;
   esac
+}
+menu_install() {
+  local selected_port selected_mode
+  if [[ $(state) == new ]]; then
+    read -r -p "HTTP-порт [${WM_PORT:-8080}]: " selected_port || return 0
+    selected_port=${selected_port:-${WM_PORT:-8080}}
+    if [[ ! $selected_port =~ ^[0-9]{1,5}$ ]] || (( 10#$selected_port < 1 || 10#$selected_port > 65535 )); then
+      echo 'Введите порт от 1 до 65535.' >&2; return 2
+    fi
+    WM_PORT=$selected_port
+    read -r -p 'Режим: 1 — обычная установка, 2 — демо без платных запросов [1]: ' selected_mode || return 0
+    case ${selected_mode:-1} in 1) WM_DEMO=false;; 2) WM_DEMO=true;; *) echo 'Выберите 1 или 2.' >&2; return 2;; esac
+  elif [[ $(state) == incomplete ]]; then
+    WM_RESUME=true
+  fi
+  install
 }
 menu() {
   if [[ ! -t 0 ]]; then status; echo 'Для меню откройте терминал; для диагностики используйте ./wristmind check.'; return 0; fi
@@ -200,7 +219,7 @@ menu() {
     echo; echo 'WristMind · самостоятельная установка'; status
     echo '1) Проверить требования'; echo '2) Показать состояние'; echo '3) Установить / продолжить установку'; echo '4) Домен / HTTPS / туннель'; echo '5) Обновления и резервные копии'; echo '6) Ссылка первого входа'; echo '7) Локальный поиск по смыслу'; echo '8) Настроить веб-поиск'; echo '0) Выход'
     read -r -p '> ' choice || return 0
-    case $choice in 1) check || true;; 2) status;; 3) if [[ $(state) == incomplete ]]; then WM_RESUME=true; fi; install || true;; 4) access || true;; 5) maintenance_menu || true;; 6) python3 "$WM_ROOT/selfhost/installer.py" setup-link --install-dir "$WM_INSTALL_DIR" || true;; 7) local_model || true;; 8) python3 "$WM_ROOT/selfhost/web_search.py" --install-dir "$WM_INSTALL_DIR" || true;; 0) return 0;; *) echo 'Выберите 0–8.';; esac
+    case $choice in 1) check || true;; 2) status;; 3) menu_install || true;; 4) access || true;; 5) maintenance_menu || true;; 6) python3 "$WM_ROOT/selfhost/installer.py" setup-link --install-dir "$WM_INSTALL_DIR" || true;; 7) local_model || true;; 8) python3 "$WM_ROOT/selfhost/web_search.py" --install-dir "$WM_INSTALL_DIR" || true;; 0) return 0;; *) echo 'Выберите 0–8.';; esac
   done
 }
 local_model() {
