@@ -1,6 +1,7 @@
 """Terminal-only maintenance. Full snapshots; no volume deletion or silent data reset."""
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -176,9 +177,35 @@ def daemon_arch():
     return arch
 
 
-def check_image(target, manifest):
+def check_image(target, manifest, image_archive=None):
     actual = release.inspect_image(manifest['image'])
-    if actual['Id'] != manifest['image_id'] or actual['Architecture'] != manifest['arch'] or actual['Os'] != 'linux':
+    matches = actual['Id'] == manifest['image_id']
+    # Classic Docker reports the config digest; containerd reports the OCI
+    # manifest digest. Accept only a cryptographically verified link in the
+    # image archive whose checksum was already checked by release.unpack.
+    if not matches and image_archive is not None:
+        with tarfile.open(image_archive, 'r:*') as archive:
+            for manifest_id, config_id in ((actual['Id'], manifest['image_id']),
+                                           (manifest['image_id'], actual['Id'])):
+                if not re.fullmatch(r'sha256:[0-9a-f]{64}', manifest_id):
+                    continue
+                try:
+                    member = archive.getmember('blobs/sha256/' + manifest_id[7:])
+                except KeyError:
+                    continue
+                if not member.isfile() or member.size > 65536:
+                    continue
+                blob = archive.extractfile(member).read()
+                if 'sha256:' + hashlib.sha256(blob).hexdigest() != manifest_id:
+                    continue
+                try:
+                    document = json.loads(blob)
+                    matches = document.get('schemaVersion') == 2 and document.get('config', {}).get('digest') == config_id
+                except (ValueError, AttributeError):
+                    continue
+                if matches:
+                    break
+    if not matches or actual['Architecture'] != manifest['arch'] or actual['Os'] != 'linux':
         raise ValueError('Загруженный образ не совпадает с манифестом.')
 
 
@@ -227,7 +254,7 @@ def apply_backup(target, staging, info):
         if dump.read(5) != b'PGDMP':
             raise ValueError('Повреждён архив базы данных.')
     run(['docker', 'image', 'load'], target, source=staging / 'image.tar')
-    check_image(target, info)
+    check_image(target, info, staging / 'image.tar')
     # Also stop possibly half-started new services, using current valid configuration.
     if installer.manifest_at(target):
         current, _ = state(target, False)
@@ -270,7 +297,7 @@ def update(target, package, checksum):
         # Image/dependencies are obtained before the maintenance pause, so a network
         # failure cannot take an otherwise healthy installation offline.
         run(['docker', 'image', 'load'], target, source=staging / 'image.tar')
-        check_image(target, info)
+        check_image(target, info, staging / 'image.tar')
         active = {'db'}
         mode = old_data.get('access', {}).get('mode')
         if mode in {'domain', 'tunnel'}:
@@ -404,7 +431,7 @@ def install_release(target, package, checksum, port, demo, resume=False):
         installer.write_manifest(target, data)
         try:
             run(['docker', 'image', 'load'], target, source=staging / 'image.tar')
-            check_image(target, info)
+            check_image(target, info, staging / 'image.tar')
             run(command(target, data, 'config', '--quiet'), target)
             start(target, data)
             installer.health(target, data, 20)

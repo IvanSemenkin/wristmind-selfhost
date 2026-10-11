@@ -329,3 +329,27 @@ class AdditionalRecoveryTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class OciIdentityTest(unittest.TestCase):
+    def test_config_and_oci_identity_are_linked_not_merely_accepted(self):
+        import hashlib
+        config = 'sha256:' + 'a' * 64
+        blob = json.dumps({'schemaVersion': 2, 'config': {'digest': config}}).encode()
+        oci = 'sha256:' + hashlib.sha256(blob).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            image = target / 'image.tar'
+            with tarfile.open(image, 'w') as archive:
+                member = tarfile.TarInfo('blobs/sha256/' + oci[7:])
+                member.size = len(blob)
+                archive.addfile(member, io.BytesIO(blob))
+            manifest = {'image': 'test', 'image_id': config, 'arch': 'amd64'}
+            with patch.object(release, 'inspect_image', return_value={'Id': oci, 'Architecture': 'amd64', 'Os': 'linux'}):
+                lifecycle.check_image(target, manifest, image)
+                with self.assertRaises(ValueError):
+                    lifecycle.check_image(target, {**manifest, 'image_id': 'sha256:' + 'b' * 64}, image)
+                with self.assertRaises(ValueError):
+                    lifecycle.check_image(target, {**manifest, 'arch': 'arm64'}, image)
+            with patch.object(release, 'inspect_image', return_value={'Id': config, 'Architecture': 'amd64', 'Os': 'linux'}):
+                lifecycle.check_image(target, {**manifest, 'image_id': oci}, image)
