@@ -68,6 +68,8 @@ assert not any(k.startswith(('COMPOSE_', 'WRISTMIND_')) or k == 'POSTGRES_PASSWO
         self.tool('getconf', '#!/bin/sh\necho 4\n')
         self.tool('df', "#!/bin/sh\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted\\nfs 20000000 0 20000000 0%% /\\n'\n")
         self.tool('ss', '#!/bin/sh\nexit 0\n')
+        # Dependency repair must never escalate to the host's real sudo in tests.
+        self.tool('sudo', '#!/bin/sh\nexit 1\n')
 
     def tool(self, name, text):
         path = self.bin / name
