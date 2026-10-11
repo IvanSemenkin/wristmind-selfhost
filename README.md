@@ -94,7 +94,7 @@ ssh -L 8080:127.0.0.1:8080 user@server
 Обновления сервера выполняются **только из терминала**. Перед обновлением создаётся резервная копия; пользовательские данные сохраняются. Компаньон и часы обновляются отдельно APK с тем же сертификатом подписи.
 
 ```bash
-./wristmind menu --install-dir "$HOME/wristmind-server"
+bash <(curl -fsSL https://raw.githubusercontent.com/IvanSemenkin/wristmind-selfhost/main/install.sh)
 ```
 
 [Релизы, обновление, резервные копии и откат](docs/SELF_HOSTING_RELEASES.md). Не удаляйте Docker volumes и не публикуйте `.env`, бэкапы, ключи подписи или одноразовые ссылки.
