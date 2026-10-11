@@ -10,7 +10,7 @@ def estimate(cpu, ram, available, disk):
     return {'cpu': round(cpu, 2), 'ram_gib': round(ram, 1), 'available_gib': round(available, 1),
             'disk_free_gib': round(disk, 1), 'tier': tier,
             'recommendations': {'web_search': cpu >= 2 and ram >= 4, 'digitization': cpu >= 2 and ram >= 4,
-                                'rag': ram >= 4, 'voice': ram >= 2},
+                                'rag': ram >= 4, 'voice': True},
             'notice': 'Ориентировочная оценка для одного активного пользователя. Модели работают у провайдера; PDF/OCR и поиск нагружают сервер. Скорость диска, сеть и одновременные запросы не измеряются.'}
 
 
@@ -41,9 +41,17 @@ def inspect_resources(path=Path('.'), proc=Path('/proc'), cgroup=Path('/sys/fs/c
 
 if __name__ == '__main__':
     import sys
+    import textwrap
+    colours = sys.stdout.isatty() and os.environ.get('TERM', 'dumb') != 'dumb' and 'NO_COLOR' not in os.environ
+    def emit(text, colour='90'):
+        prefix = '\033[' + colour + 'm' if colours else ''
+        suffix = '\033[0m' if colours else ''
+        width = max(28, min(76, shutil.get_terminal_size().columns))
+        for line in textwrap.wrap(text, width=width):
+            print(prefix + line + suffix)
     result = inspect_resources(Path(sys.argv[1]) if len(sys.argv) > 1 else Path('.'))
-    print(f"Оценка ресурсов: {result['cpu']} CPU · {result['ram_gib']} ГиБ RAM (свободно {result['available_gib']}) · {result['disk_free_gib']} ГиБ диска")
-    print('Профиль: ' + {'limited':'ограниченный', 'standard':'базовый', 'comfortable':'с запасом'}[result['tier']])
-    print(result['notice'])
-    for key, label in [('web_search','Веб-поиск'), ('digitization','Оцифровка'), ('rag','RAG'), ('voice','Голос')]:
-        print(label + ': ' + ('рекомендуется' if result['recommendations'][key] else 'лучше отключить или проверить под нагрузкой'))
+    emit(f"Оценка ресурсов: {result['cpu']} CPU · {result['ram_gib']} ГиБ RAM (свободно {result['available_gib']}) · {result['disk_free_gib']} ГиБ диска")
+    emit('Профиль: ' + {'limited':'ограниченный', 'standard':'базовый', 'comfortable':'с запасом'}[result['tier']], '93' if result['tier'] == 'limited' else '92')
+    emit(result['notice'])
+    for key, label in [('web_search','Веб-поиск'), ('digitization','Оцифровка'), ('rag','RAG'), ('voice','Голос через API')]:
+        emit(label + ': ' + ('доступен после подключения провайдера; локальная модель не нужна' if key == 'voice' else 'рекомендуется' if result['recommendations'][key] else 'может работать медленно; включайте по необходимости'))

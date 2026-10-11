@@ -45,6 +45,11 @@ ui_item() {
   printf '  %b%s)%b  %s\n' "$colour$WM_BOLD" "$1" "$WM_RESET" "$2"
 }
 ui_prompt() { printf '\n%b›%b %s' "$WM_BLUE$WM_BOLD" "$WM_RESET" "$1"; }
+ui_result() {
+  local colour=$WM_DIM
+  case "$1" in ✓*) colour=$WM_GREEN;; ✗*) colour=$WM_RED;; *) colour=$WM_AMBER;; esac
+  printf '%b%s%b\n' "$colour" "$1" "$WM_RESET"
+}
 ui_state() {
   local label colour current
   current=$(state)
@@ -137,32 +142,31 @@ status() {
   esac
 }
 check() {
-  local failed=0 available='' cores='' ancestor="$WM_INSTALL_DIR" port
-  echo 'Проверка требований (без изменения системы)'
-  if [[ $(uname -s) == Linux ]]; then echo '✓ Linux'; else echo '✗ Для серверного установщика нужен Linux'; failed=1; fi
+  local failed=0 available='' ancestor="$WM_INSTALL_DIR" port
+  ui_header 'Проверка перед установкой'; ui_section 'ОБЯЗАТЕЛЬНЫЕ ЗАВИСИМОСТИ'
+  if [[ $(uname -s) == Linux ]]; then ui_result '✓ Linux'; else ui_result '✗ Для серверного установщика нужен Linux'; failed=1; fi
   if command -v docker >/dev/null && command -v timeout >/dev/null; then
-    if timeout 10 docker info >/dev/null 2>&1; then echo '✓ Docker доступен'; else echo '✗ Docker не запущен или нет доступа к нему'; failed=1; fi
-    if timeout 10 docker compose version >/dev/null 2>&1; then echo '✓ Docker Compose v2'; else echo '✗ Нужен Docker Compose v2'; failed=1; fi
-  else echo '✗ Нужны Docker и timeout (coreutils)'; failed=1; fi
-  if command -v python3 >/dev/null && python3 -c 'import sys; sys.exit(sys.version_info < (3,10))'; then echo '✓ Python 3.10+'; else echo '✗ Нужен Python 3.10+'; failed=1; fi
+    if timeout 10 docker info >/dev/null 2>&1; then ui_result '✓ Docker доступен'; else ui_result '✗ Docker не запущен или нет доступа к нему'; failed=1; fi
+    if timeout 10 docker compose version >/dev/null 2>&1; then ui_result '✓ Docker Compose v2'; else ui_result '✗ Нужен Docker Compose v2'; failed=1; fi
+  else ui_result '✗ Нужны Docker и timeout (coreutils)'; failed=1; fi
+  if command -v python3 >/dev/null && python3 -c 'import sys; sys.exit(sys.version_info < (3,10))'; then ui_result '✓ Python 3.10+'; else ui_result '✗ Нужен Python 3.10+'; failed=1; fi
+  ui_section 'МОЩНОСТЬ СЕРВЕРА'
   python3 "$WM_ROOT/selfhost/resources.py" "$WM_INSTALL_DIR"
-  cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
-  if [[ $cores =~ ^[0-9]+$ ]] && (( cores >= 2 )); then echo '✓ Не менее 2 CPU'; else echo '✗ Нужно не менее 2 CPU'; failed=1; fi
-  available=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || true)
-  if [[ $available =~ ^[0-9]+$ ]] && (( available >= 3900000 )); then echo '✓ Не менее 4 ГБ RAM'; else echo '✗ Нужно около 4 ГБ RAM'; failed=1; fi
+  printf '%bРесурсы — рекомендации, не запрет установки.%b\n' "$WM_AMBER" "$WM_RESET"
+  ui_section 'ДИСК И ДОСТУП'
   while [[ ! -d $ancestor && $ancestor != / ]]; do ancestor=$(dirname "$ancestor"); done
   available=$(df -Pk "$ancestor" 2>/dev/null | awk 'NR==2 {print $4}')
-  if [[ $available =~ ^[0-9]+$ ]] && (( available >= 10485760 )); then echo '✓ Не менее 10 ГБ свободного места'; else echo '✗ Нужно 10 ГБ свободного места'; failed=1; fi
+  if [[ $available =~ ^[0-9]+$ ]] && (( available >= 10485760 )); then ui_result '✓ Не менее 10 ГБ свободного места'; else ui_result '✗ Нужно 10 ГБ свободного места'; failed=1; fi
   if [[ $(state) == new ]]; then
     if command -v ss >/dev/null; then
       for port in "${WM_PORT:-8080}"; do
-        if [[ -n $(ss -H -ltn "sport = :$port" 2>/dev/null) ]]; then echo "✗ Порт $port занят"; failed=1; else echo "✓ Порт $port свободен"; fi
+        if [[ -n $(ss -H -ltn "sport = :$port" 2>/dev/null) ]]; then ui_result "✗ Порт $port занят"; failed=1; else ui_result "✓ Порт $port свободен"; fi
       done
-    else echo '✗ Для проверки портов нужен ss (iproute2)'; failed=1; fi
-  else echo '• Проверка свободных портов пропущена: каталог уже занят или есть установка'; fi
+    else ui_result '✗ Для проверки портов нужен ss (iproute2)'; failed=1; fi
+  else ui_result '• Проверка свободных портов пропущена: каталог уже занят или есть установка'; fi
   if [[ -n $WM_DOMAIN ]]; then
-    if getent ahosts "$WM_DOMAIN" >/dev/null 2>&1; then echo '✓ Имя домена разрешается в DNS (совпадение с IP сервера ещё не проверено)'; else echo '✗ Домен не разрешается в DNS'; failed=1; fi
-  else echo '• Домен не задан. Для подключения часов потребуется HTTPS'; fi
+    if getent ahosts "$WM_DOMAIN" >/dev/null 2>&1; then ui_result '✓ Имя домена разрешается в DNS (совпадение с IP сервера ещё не проверено)'; else ui_result '✗ Домен не разрешается в DNS'; failed=1; fi
+  else ui_result '• Домен не задан. Для подключения часов потребуется HTTPS'; fi
   return "$failed"
 }
 install() {

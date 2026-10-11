@@ -119,6 +119,18 @@ class CliTest(unittest.TestCase):
         self.assertIn('совпадение с IP сервера ещё не проверено', result.stdout)
         self.assertFalse(self.install.exists())
 
+    def test_small_server_is_not_blocked_by_resource_recommendations(self):
+        self.requirements_tools()
+        self.tool('getconf', 'echo 1')
+        import shutil
+        awk = shutil.which('awk')
+        self.tool('awk', 'case "$*" in *MemTotal*) echo 1900000;; *) exec '+awk+' "$@";; esac')
+        result = self.run_cli('check')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('не запрет установки', result.stdout)
+        self.assertIn('Голос через API: доступен', result.stdout)
+        self.assertFalse(self.install.exists())
+
     def test_requirements_report_docker_and_port_failures(self):
         self.requirements_tools()
         self.tool('docker', 'exit 1')
