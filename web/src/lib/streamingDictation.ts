@@ -1,3 +1,4 @@
+import { createRequestId } from './id.ts';
 /** Ordered, bounded dictation packets; retries keep their session and sequence. */
 export type SpeechPacket = {
   session_id: string;
@@ -35,7 +36,7 @@ async function audioPacket(audio: Uint8Array): Promise<Pick<SpeechPacket, 'data'
   return { data: btoa(Array.from(wire, (byte) => String.fromCharCode(byte)).join('')), encoding };
 }
 
-export function startStreamingDictation(transport: SpeechTransport, signal: AbortSignal, sessionId: string = crypto.randomUUID()) {
+export function startStreamingDictation(transport: SpeechTransport, signal: AbortSignal, sessionId: string = createRequestId()) {
   const queue: Uint8Array[] = [];
   let queuedBytes = 0;
   let totalBytes = 0;

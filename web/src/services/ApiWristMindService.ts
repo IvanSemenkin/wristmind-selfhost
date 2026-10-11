@@ -1,3 +1,4 @@
+import { createRequestId } from '@/lib/id';
 import type { SpeechPacket, SpeechResult } from '@/lib/streamingDictation';
 import type { Session } from '@/session';
 import { WristMindError } from './errors';
@@ -391,8 +392,8 @@ export class ApiWristMindService implements WristMindService {
     get: async (id: string): Promise<Chat> => (await this.chats.list()).find((item) => item.id === id) ?? (() => { throw new WristMindError('Чат не найден', { code: 'not_found', status: 404 }); })(),
     create: async (input: { mode_id: string | null; title?: string }): Promise<Chat> => {
       const value = input.mode_id
-        ? await this.request<any>('/v1/chats', { method: 'POST', body: JSON.stringify({ mode_id: input.mode_id, title: input.title ?? 'Новый чат', client_request_id: crypto.randomUUID() }) })
-        : await this.request<any>('/v1/chats/quick', { method: 'POST', body: JSON.stringify({ client_request_id: crypto.randomUUID() }) });
+        ? await this.request<any>('/v1/chats', { method: 'POST', body: JSON.stringify({ mode_id: input.mode_id, title: input.title ?? 'Новый чат', client_request_id: createRequestId() }) })
+        : await this.request<any>('/v1/chats/quick', { method: 'POST', body: JSON.stringify({ client_request_id: createRequestId() }) });
       return this.mapChat(value);
     },
     update: async (id: string, input: { title?: string; pinned?: boolean }): Promise<Chat> => {
@@ -421,7 +422,7 @@ export class ApiWristMindService implements WristMindService {
       method: 'POST',
       headers: { 'X-WristMind-Client-Sent-Ms': `${Date.now()}` },
       body: JSON.stringify({
-        client_request_id: input.client_message_id ?? crypto.randomUUID(),
+        client_request_id: input.client_message_id ?? createRequestId(),
         text: input.content,
         research_mode: input.research_mode === true,
         web_search: input.web_search === true,
@@ -533,7 +534,7 @@ export class ApiWristMindService implements WristMindService {
       return { source_id: id, pages, chunks };
     },
     upload: async (input: SourceUploadInput): Promise<SourceUploadResult> => {
-      const body = new FormData(); body.set('mode_id', input.mode_id); body.set('processing_mode', input.processing_mode); body.set('client_request_id', crypto.randomUUID()); body.set('title', input.title); body.set('file', input.file as File, input.file.name);
+      const body = new FormData(); body.set('mode_id', input.mode_id); body.set('processing_mode', input.processing_mode); body.set('client_request_id', createRequestId()); body.set('title', input.title); body.set('file', input.file as File, input.file.name);
       const job = await this.request<ApiJob>('/v1/knowledge', { method: 'POST', body });
       const sources = await this.knowledge.list(input.mode_id);
       const source = [...sources].sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))[0];
@@ -542,7 +543,7 @@ export class ApiWristMindService implements WristMindService {
       return { source, job_id: job.id };
     },
     reprocess: async (id: string): Promise<void> => {
-      const job = await this.request<ApiJob>(`/v1/knowledge/${encodeURIComponent(id)}/reprocess`, { method: 'POST', body: JSON.stringify({ client_request_id: crypto.randomUUID() }) });
+      const job = await this.request<ApiJob>(`/v1/knowledge/${encodeURIComponent(id)}/reprocess`, { method: 'POST', body: JSON.stringify({ client_request_id: createRequestId() }) });
       void this.pollSource(id, undefined, job.id);
     },
     remove: async (id: string): Promise<void> => { await this.request<void>(`/v1/knowledge/${encodeURIComponent(id)}`, { method: 'DELETE' }); },
@@ -568,7 +569,7 @@ export class ApiWristMindService implements WristMindService {
     const now = Date.now();
     const pending = this.pendingPairingRequest && now - this.pendingPairingRequest.createdAt < 10 * 60_000
       ? this.pendingPairingRequest
-      : { id: crypto.randomUUID(), createdAt: now };
+      : { id: createRequestId(), createdAt: now };
     this.pendingPairingRequest = pending;
     let lastError: unknown;
 

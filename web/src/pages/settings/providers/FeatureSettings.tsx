@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { Button, Field, Select, Switch } from '@/components';
 import { providerRequest, type Access, type Registry } from './providerApi';
+import { SearchSettings } from './SearchSettings';
 import styles from './Providers.module.css';
 type Feature = 'web_search' | 'digitization' | 'rag' | 'voice';
-type State = { features: Record<Feature, { enabled: boolean; available: boolean; reason: string }>; resources: { cpu: number; ram_gib: number; available_gib: number; disk_free_gib: number; tier: 'limited' | 'standard' | 'comfortable'; notice: string; recommendations: Record<Feature, boolean> } };
+type State = { search_provider?: string; features: Record<Feature, { enabled: boolean; available: boolean; reason: string }>; resources: { cpu: number; ram_gib: number; available_gib: number; disk_free_gib: number; tier: 'limited' | 'standard' | 'comfortable'; notice: string; recommendations: Record<Feature, boolean> } };
 const labels: Record<Feature, string> = { web_search: 'Веб-поиск', digitization: 'Чтение документов', rag: 'Ответы по вашим документам', voice: 'Голосовой ввод' };
 const descriptions: Record<Feature,string> = { web_search:'Ищет актуальную информацию в интернете', digitization:'Читает текст из PDF, фотографий и сканов', rag:'Использует загруженные источники при ответах', voice:'Преобразует вашу речь в текст' };
 const roles: Partial<Record<Feature,string>> = { digitization:'vision', rag:'embedding', voice:'speech' };
-const modelLabels: Record<string,string> = { vision:'Модель для сложных документов', embedding:'Модель для улучшения поиска', speech:'Модель распознавания голоса' };
+const modelLabels: Record<string,string> = { vision:'Модель для понимания изображений', embedding:'Модель для улучшения поиска', speech:'Модель распознавания голоса' };
 type AssignmentProps = { registry: Registry; disabled: boolean; onAssign: (role: string, identity: string) => void; onAdd: (role: string, local?: boolean) => void };
 export function RolePicker({ role, registry, disabled, onAssign, onAdd }: AssignmentProps & {role: string}) {
   const models = registry.models.filter(m => m.enabled && m.roles?.includes(role) && registry.providers.some(p => p.id === m.provider && p.enabled));
@@ -46,16 +47,17 @@ export function FeatureSettings({ access, registry, disabled, onAssign, onAdd }:
         return <div key={feature} className={styles.featureGroup}>
           <Switch label={label} checked={row.enabled} disabled={busy || disabled} description={descriptions[feature]} onChange={checked => { const values = Object.fromEntries(Object.entries(state.features).map(([k,v]) => [k,v.enabled])) as Record<Feature,boolean>; values[feature] = checked; void save(values); }} />
           <p className={styles.hint}><strong>{!row.enabled ? 'Выключено' : row.available ? 'Работает' : 'Нужна настройка'}</strong>{row.enabled && <> · {explanation}</>}</p>
+          {feature === 'web_search' && <SearchSettings access={access} disabled={busy || disabled} onSaved={load} />}
           {feature === 'web_search' && row.enabled && !row.available && <details className={styles.improvement}><summary><ChevronDown size={16} /><span>Настроить веб-поиск</span></summary><div className={styles.form}><p className={styles.hint}>В новых установках веб-поиск настраивается автоматически. Для уже установленной системы откройте меню командой ниже и выберите пункт 8 «Настроить веб-поиск».</p><div className={styles.command}><code>{'bash <(curl -fsSL https://raw.githubusercontent.com/IvanSemenkin/wristmind-selfhost/main/install.sh)'}</code></div><p className={styles.hint}>При запуске меню укажите каталог существующей установки. После сообщения «Готово» обновите панель. Ключ и адрес сервиса вводить не нужно.</p></div></details>}
-          {role && row.enabled && (basic ? <details className={styles.improvement}>
+          {role && (row.enabled || role === 'vision') && (basic ? <details className={styles.improvement}>
             <summary><ChevronDown size={16} /><span>{feature === 'rag' ? 'Улучшить поиск по смыслу' : 'Улучшить чтение сложных документов'}<small className={styles.disclosureNote}>Необязательно</small></span></summary>
-            <div className={styles.form}><p className={styles.hint}>{feature === 'rag' ? 'Обычный поиск находит совпадающие слова. Поиск по смыслу может найти «затраты» по запросу «расходы». Для этого нужна отдельная модель: локальная или подключённая через API. Она не устанавливается автоматически.' : 'Оцифровка уже работает локально. Для понимания изображений, схем и сложных формул подключите Vision-модель внешнего провайдера; локально она не устанавливается.'}</p>
+            <div className={styles.form}><p className={styles.hint}>{feature === 'rag' ? 'Обычный поиск находит совпадающие слова. Поиск по смыслу может найти «затраты» по запросу «расходы». Для этого нужна отдельная модель: локальная или подключённая через API. Она не устанавливается автоматически.' : 'Обычное чтение текста выполняется локально. Vision можно подключить независимо от переключателя чтения документов. Для понимания изображений, схем и сложных формул подключите Vision-модель внешнего провайдера; локально она не устанавливается.'}</p>
             <p className={styles.hint}>{feature === 'rag' ? 'При выборе внешнего сервиса ему передаются тексты фрагментов и поисковых запросов. После смены модели повторно обработайте документы.' : 'При выборе внешнего сервиса ему передаются изображения страниц.'} Запросы могут оплачиваться по тарифу провайдера.</p>
             <RolePicker role={role} registry={registry} disabled={busy || disabled} onAssign={onAssign} onAdd={onAdd} /></div>
           </details> : <RolePicker role={role} registry={registry} disabled={busy || disabled} onAssign={onAssign} onAdd={onAdd} />)}
         </div>;
       })}
-      <details className={styles.resourceSummary}><summary><ChevronDown size={16} /><span>Мощность сервера: {{ limited:'ограниченная', standard:'базовая', comfortable:'с запасом' }[state.resources.tier]} · {state.resources.cpu} CPU · {state.resources.ram_gib} ГиБ RAM</span></summary><div className={styles.form}><p className={styles.hint}>Свободная RAM: {state.resources.available_gib} ГиБ. Свободный диск: {state.resources.disk_free_gib} ГиБ.</p><p className={styles.hint}>{state.resources.notice}</p><Button disabled={busy || disabled} onClick={() => void save(state.resources.recommendations)}>Применить рекомендации</Button></div></details>
+      <details className={styles.resourceSummary}><summary><ChevronDown size={16} /><span>Мощность сервера: {{ limited:'ограниченная', standard:'базовая', comfortable:'с запасом' }[state.resources.tier]} · {state.resources.cpu} CPU · {state.resources.ram_gib} ГиБ RAM</span></summary><div className={styles.form}><p className={styles.hint}>Свободная RAM: {state.resources.available_gib} ГиБ. Свободный диск: {state.resources.disk_free_gib} ГиБ.</p><p className={styles.hint}>{state.resources.notice}</p><Button disabled={busy || disabled} onClick={() => void save({ ...state.resources.recommendations, voice:state.features.voice.enabled, web_search:state.search_provider && state.search_provider !== 'searxng' ? state.features.web_search.enabled : state.resources.recommendations.web_search })}>Применить рекомендации для локальных функций</Button></div></details>
       <p className={styles.hint}>Отключение функций сохраняет ваши чаты и документы.</p>
     </>}
   </section>;

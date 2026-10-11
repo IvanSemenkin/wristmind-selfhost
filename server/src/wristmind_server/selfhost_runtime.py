@@ -11,7 +11,7 @@ from pydantic import SecretStr
 
 
 FIELDS = {'openrouter_api_key', 'deepseek_api_key', 'default_model_id', 'quick_chat_model_id',
-          'router_model_id', 'title_model_id', 'providers', 'models', 'model_roles', 'selfhost_features'}
+          'router_model_id', 'title_model_id', 'providers', 'models', 'model_roles', 'selfhost_features', 'search_provider', 'search_api_key', 'search_folder_id'}
 
 
 def cipher(settings):

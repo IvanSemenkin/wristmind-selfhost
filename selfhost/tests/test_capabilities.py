@@ -50,6 +50,9 @@ assert client.put('/v1/model-roles/speech',json={'identity':''}).status_code == 
 assert not client.get('/v1/provider-settings').json()['model_roles'].get('speech')
 ''')
 
+    def test_search_config_is_encrypted_and_unsupported_deepseek_roles_are_rejected(self):
+        self.run_case("create(); configure()\np = client.post('/v1/providers', json={'kind':'deepseek'}).json()['provider']['id']\nassert client.post('/v1/models/installed',json={'provider_id':p,'model_id':'demo','roles':['vision']}).status_code == 422\nkey='test-search-secret'\nassert client.put('/v1/selfhost/search',json={'provider':'yandex','api_key':key}).status_code == 422\nassert client.put('/v1/selfhost/search',json={'provider':'yandex','api_key':key,'folder_id':'folder-test'}).status_code == 200\npublic=client.get('/v1/selfhost/search').json()\nassert public['has_key'] and key not in str(public)\nassert read_runtime(get_settings())['search_api_key']==key\nassert key.encode() not in (get_settings().storage_dir/'selfhost-settings.enc').read_bytes()\nassert client.put('/v1/selfhost/search',json={'provider':'yandex','folder_id':'folder-test'}).status_code == 200\nassert client.put('/v1/selfhost/search',json={'provider':'brave'}).status_code == 422\nassert client.put('/v1/selfhost/search',json={'provider':'searxng'}).status_code == 200\nassert not client.get('/v1/selfhost/search').json()['has_key']\n")
+
     def test_delete_provider_preserves_data_and_guards_active_model(self):
         self.run_case('''create(); identity = configure(); mode_id = mode()
 registry = client.get('/v1/provider-settings').json()
@@ -98,6 +101,7 @@ def test_resource_limits_and_advisory(tmp_path):
     result=inspect_resources(tmp_path,proc,cgroup)
     assert result['cpu'] <= 1 and result['ram_gib'] == 2 and result['available_gib'] == 1
     assert not result['recommendations']['web_search']
+    assert estimate(1,1.9,1,15)['recommendations']['voice']
     assert estimate(4,8,4,20)['tier'] == 'comfortable'
 
 

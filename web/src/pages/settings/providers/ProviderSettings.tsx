@@ -4,7 +4,7 @@ import { Button, Field, Input, Select, Switch, Panel, PanelHeader, PanelBody, Se
 import { useSession } from '@/session';
 import { useActions } from '@/services';
 import { useModels, useSettings } from '@/store';
-import { providerRequest, type Access, type Registry, type Provider, type InstalledModel } from './providerApi';
+import { providerRequest, supportsRole, type Access, type Registry, type Provider, type InstalledModel } from './providerApi';
 import styles from './Providers.module.css';
 import { LocalModelGuide, localPlans } from './LocalModelGuide';
 import { FeatureSettings, RolePicker } from './FeatureSettings';
@@ -12,7 +12,7 @@ const roleLabels: Record<string, string> = { text: 'Ответы в чатах',
 
 const message = (cause: unknown) => cause instanceof Error ? cause.message : 'Не удалось выполнить действие.';
 
-export function ProviderForm({ access, registry, onSaved, onCancel, textOnly = false, localUrl = '' }: { access: Access; registry: Registry; onSaved: (p: Provider) => void; onCancel?: () => void; textOnly?: boolean; localUrl?: string }) {
+export function ProviderForm({ access, registry, onSaved, onCancel, textOnly = false, localUrl = '', role = 'text' }: { access: Access; registry: Registry; onSaved: (p: Provider) => void; onCancel?: () => void; textOnly?: boolean; localUrl?: string; role?: string }) {
   const [kind, setKind] = useState(localUrl ? 'compatible' : 'openai');
   const [key, setKey] = useState('');
   const [url, setUrl] = useState(localUrl);
@@ -25,7 +25,7 @@ export function ProviderForm({ access, registry, onSaved, onCancel, textOnly = f
     void providerRequest<{ provider: Provider }>(access, 'providers', { kind, api_key: key, base_url: url.trim(), label: label.trim(), allow_local: kind === 'compatible' && local })
       .then(result => { setKey(''); onSaved(result.provider); }).catch(cause => setError(message(cause))).finally(() => { pending.current = false; setBusy(false); });
   }}>
-    {!localUrl && <Field label="Провайдер" htmlFor="provider-kind"><Select className={styles.select} id="provider-kind" value={kind} onChange={value => { setKind(value); setKey(''); setUrl(''); setLocal(false); setError(''); }} options={registry.presets.filter(p => !textOnly || p.id !== 'yandex').map(p => ({ value: p.id, label: p.label }))} disabled={busy} /></Field>}
+    {!localUrl && <Field label="Провайдер" htmlFor="provider-kind"><Select className={styles.select} id="provider-kind" value={kind} onChange={value => { setKind(value); setKey(''); setUrl(''); setLocal(false); setError(''); }} options={registry.presets.filter(p => supportsRole(p.id,role) && (!textOnly || p.id !== 'yandex')).map(p => ({ value: p.id, label: p.label }))} disabled={busy} /></Field>}
     {localUrl && <p className={styles.hint}>Локальный сервер · адрес виден серверу WristMind. Ключ не нужен для сервисов, установленных нашим скриптом.</p>}
     {kind === 'compatible' && <><Field label={localUrl ? "Адрес локального сервиса" : "URL API"} htmlFor="provider-url" hint={localUrl ? "Адрес уже заполнен для установки нашим скриптом. Его использует сервер WristMind." : "Адрес совместимого API, например https://example.com/v1"}><Input className={styles.control} id="provider-url" type="url" value={url} onChange={e => setUrl(e.target.value)} required disabled={busy} maxLength={300} /></Field>{!localUrl && <Switch checked={local} onChange={setLocal} label="Локальный сервер без HTTPS" description="Разрешает HTTP и подключение без ключа. Используйте только в доверенной сети." />}</>}
     {!localUrl && <Field label="Ключ API" htmlFor="provider-key" hint={kind === 'compatible' && local ? 'Необязательно: заполните только если ваш локальный сервер требует авторизацию.' : registry.demo ? 'Демо-режим: ключ не нужен. В рабочей установке здесь вводится ключ из личного кабинета провайдера.' : 'Хранится зашифрованным на сервере. Не возвращается в браузер.'}><Input className={styles.control} id="provider-key" type="password" value={key} onChange={e => setKey(e.target.value)} autoComplete="off" required={!registry.demo && !(kind === 'compatible' && local)} disabled={busy || registry.demo} maxLength={1000} placeholder={registry.demo ? 'Не требуется в демо-режиме' : 'Ключ провайдера'} /></Field>}
@@ -65,7 +65,7 @@ export function ModelForm({ access, provider, demo, useDefault = false, initialR
       .then(onSaved).catch(cause => setError(message(cause))).finally(() => { pending.current = false; setBusy(false); });
   }}>
     <p className={styles.providerName}>{provider.allow_local ? <Server size={16} /> : <KeyRound size={16} />}{provider.label}</p>
-    {!useDefault && initialRole === 'text' && <Field label="Для чего нужна модель" htmlFor="model-role" hint="Проверяем именно эту функцию. Для нескольких назначений добавьте модель повторно с другой ролью."><Select className={styles.select} id="model-role" value={role} disabled={busy} onChange={setRole} options={Object.entries(roleLabels).filter(([key]) => provider.kind !== 'yandex' || key === 'speech').map(([value,label]) => ({value,label}))} /></Field>}
+    {!useDefault && initialRole === 'text' && <Field label="Для чего нужна модель" htmlFor="model-role" hint="Проверяем именно эту функцию. Для нескольких назначений добавьте модель повторно с другой ролью."><Select className={styles.select} id="model-role" value={role} disabled={busy} onChange={setRole} options={Object.entries(roleLabels).filter(([key]) => supportsRole(provider.kind,key)).map(([value,label]) => ({value,label}))} /></Field>}
     <Field label="Найти модель" htmlFor="model-search"><Input className={styles.control} id="model-search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Название или ID модели" type="search" disabled={busy} maxLength={120} /></Field>
     <div className={styles.catalog} aria-label="Модели провайдера" aria-busy={loading}>
       {rows.slice(0, 12).map(row => <button key={row.id} type="button" className={styles.result} data-selected={remote === row.id || undefined} disabled={busy} onClick={() => { setRemote(row.id); setLabel(row.label.slice(0, 80)); }}><span><strong>{row.label}</strong><small>{row.id}</small></span>{remote === row.id && <Check size={16} />}</button>)}
@@ -97,8 +97,8 @@ export function AddModelFlow({ access, useDefault = false, initialRole = 'text',
   if (localMode && !localReady) return <LocalModelGuide role={initialRole} selfhost={Boolean(registry.selfhost)} onContinue={() => {setLocalReady(true); const existing = registry.providers.find(p => p.enabled && p.allow_local && p.base_url.replace(/\/$/, '') === localPlans[initialRole].url); if(existing) setProvider(existing);}} onCancel={() => {setLocalMode(false); onCancel?.();}} />;
   if (localMode && !provider) return <ProviderForm access={access} registry={registry} textOnly localUrl={localPlans[initialRole].url} onSaved={setProvider} onCancel={() => setLocalReady(false)} />;
   if (provider) return <div className={styles.form}><p className={styles.hint}>Шаг 2 из 2 · Выберите модель для: {roleLabels[initialRole].toLowerCase()}</p><ModelForm key={provider.id} access={access} provider={provider} demo={registry.demo} useDefault={useDefault} initialRole={initialRole} initialModel={localMode ? localPlans[initialRole].model : ''} onSaved={onSaved} onCancel={() => { setProvider(null); setAdding(false); }} /></div>;
-  const enabled = registry.providers.filter(p => p.enabled && p.kind !== 'gigachat' && (!(useDefault || initialRole !== 'speech') || p.kind !== 'yandex'));
-  if (adding) return <ProviderForm access={access} registry={registry} textOnly={useDefault || initialRole !== 'speech'} onSaved={setProvider} onCancel={enabled.length ? () => setAdding(false) : onCancel} />;
+  const enabled = registry.providers.filter(p => p.enabled && supportsRole(p.kind,initialRole) && p.kind !== 'gigachat' && (!(useDefault || initialRole !== 'speech') || p.kind !== 'yandex'));
+  if (adding) return <ProviderForm access={access} registry={registry} role={initialRole} textOnly={useDefault || initialRole !== 'speech'} onSaved={setProvider} onCancel={enabled.length ? () => setAdding(false) : onCancel} />;
   return <div className={styles.form}><p className={styles.hint}>Шаг 1 из 2 · Выберите сервис ИИ</p><p className={styles.hint}>Выберите подключение или добавьте нового провайдера.</p>{enabled.map(p => <Button key={p.id} iconLeft={<KeyRound />} iconRight={<ChevronRight />} onClick={() => setProvider(p)}>{p.label}</Button>)}<Button iconLeft={<Plus />} onClick={() => setAdding(true)}>Добавить провайдера</Button>{initialRole === 'embedding' && <Button onClick={() => setLocalMode(true)}>Установить поиск на сервере</Button>}{onCancel && <Button onClick={onCancel}>Отмена</Button>}</div>;
 }
 

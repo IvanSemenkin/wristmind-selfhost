@@ -252,6 +252,8 @@ async def install_model(payload: InstallModel, _: Device = Depends(admin_device)
     roles = list(dict.fromkeys(payload.roles))
     if set(roles) - ROLES or (payload.use_default and 'text' not in roles):
         raise HTTPException(422, 'Выберите допустимое назначение модели; по умолчанию нужна текстовая модель')
+    if item.kind == 'deepseek' and roles != ['text']:
+        raise HTTPException(422, 'DeepSeek поддерживает только текстовые ответы. Для Vision, голоса или embeddings выберите другого провайдера.')
     if item.kind == 'yandex' and roles != ['speech']:
         raise HTTPException(422, 'SpeechKit поддерживает только распознавание голоса')
     if 'text' in roles: await probe(settings, identity, candidate)

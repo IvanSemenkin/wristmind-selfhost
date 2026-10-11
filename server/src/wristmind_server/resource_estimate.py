@@ -10,7 +10,7 @@ def estimate(cpu, ram, available, disk):
     return {'cpu': round(cpu, 2), 'ram_gib': round(ram, 1), 'available_gib': round(available, 1),
             'disk_free_gib': round(disk, 1), 'tier': tier,
             'recommendations': {'web_search': cpu >= 2 and ram >= 4, 'digitization': cpu >= 2 and ram >= 4,
-                                'rag': ram >= 4, 'voice': ram >= 2},
+                                'rag': ram >= 4, 'voice': True},
             'notice': 'Ориентировочная оценка для одного активного пользователя. Модели работают у провайдера; PDF/OCR и поиск нагружают сервер. Скорость диска, сеть и одновременные запросы не измеряются.'}
 
 

@@ -68,5 +68,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$RELEASE_TAG" outputs/wristmind-* --draft --verify-tag --notes-file RELEASE_NOTES.md
+          preview=()
+          [[ "$RELEASE_TAG" != v0.* ]] || preview=(--prerelease)
+          gh release create "$RELEASE_TAG" outputs/wristmind-* --draft --verify-tag --notes-file RELEASE_NOTES.md "${preview[@]}"
           gh release edit "$RELEASE_TAG" --draft=false

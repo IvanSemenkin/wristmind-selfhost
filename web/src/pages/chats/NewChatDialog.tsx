@@ -59,8 +59,8 @@ export function NewChatDialog({ open, onClose, initialModeId, onCreated }: NewCh
       onCreated?.(chat.id);
       onClose();
       navigate(`${base}/${chat.id}`);
-    } catch {
-      toast.error('Не удалось создать чат');
+    } catch (cause) {
+      toast.error('Не удалось создать чат', cause instanceof Error ? cause.message : undefined);
     } finally {
       setSaving(false);
     }

@@ -117,6 +117,9 @@ class Settings(BaseSettings):
     max_pdf_pages: int = 300
     worker_poll_seconds: float = 0.5
     searxng_url: str | None = None
+    search_provider: str = "searxng"
+    search_api_key: SecretStr | None = None
+    search_folder_id: str = ""
     web_search_timeout_seconds: float = 12.0
     web_search_results_limit: int = 5
     web_open_timeout_seconds: float = 8.0

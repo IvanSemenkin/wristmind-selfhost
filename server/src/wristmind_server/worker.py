@@ -2392,6 +2392,7 @@ async def process_answer(job_id: str) -> None:
                         settings.searxng_url, query,
                         timeout_seconds=settings.web_search_timeout_seconds,
                         result_limit=settings.web_search_results_limit if web_research_requested else 3,
+                        **({'provider':settings.search_provider, 'api_key':settings.search_api_key.get_secret_value() if settings.search_api_key else '', 'folder_id':settings.search_folder_id} if settings.search_provider != 'searxng' else {}),
                     )
                 latency_trace.record(latency_trace.WEB_SEARCH_FINISHED, trace_id=trace_id,
                                      message_id=assistant.id, job_id=job_id, since_send=since_send,

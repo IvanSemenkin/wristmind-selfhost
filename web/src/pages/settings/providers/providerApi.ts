@@ -21,3 +21,10 @@ export async function providerRequest<T>(access: Access, path: string, body?: un
   }
   return response.json() as Promise<T>;
 }
+
+export function supportsRole(kind: string, role: string): boolean {
+  if (kind === 'deepseek') return role === 'text';
+  if (kind === 'yandex') return role === 'speech';
+  if (kind === 'anthropic') return role === 'text' || role === 'vision';
+  return true;
+}

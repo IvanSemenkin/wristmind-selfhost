@@ -84,8 +84,14 @@ async def search_web(
     *,
     timeout_seconds: float,
     result_limit: int,
+    provider: str = 'searxng',
+    api_key: str = '',
+    folder_id: str = '',
 ) -> list[WebSearchResult]:
     """Search only through the private SearXNG endpoint; never fetch result pages."""
+    if provider != 'searxng':
+        from .search_providers import search_external
+        return await search_external(provider, api_key, folder_id, query, timeout_seconds, result_limit)
     if not endpoint:
         raise WebSearchUnavailable("Поиск источников пока не настроен")
 
