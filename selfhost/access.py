@@ -290,7 +290,7 @@ def main():
             print('Определяю IP сервера…', flush=True)
             options.expected_ip = detect_server_ip()
             if options.expected_ip:
-                print(f'Адрес найден: http://{options.expected_ip}. Использую выбранный порт установки.', flush=True)
+                print(f'IP сервера определён: {options.expected_ip}. Готовлю полную ссылку.', flush=True)
             elif sys.stdin.isatty():
                 options.expected_ip = input('Не удалось определить адрес. IP сервера: ').strip()
     try:

@@ -390,12 +390,20 @@ def main():
             if values['WRISTMIND_PUBLIC_BASE_URL'].startswith('http://localhost:') and sys.stdin.isatty():
                 print('Настроим HTTP-доступ по IP для входа с другого устройства.', flush=True)
                 result = subprocess.run([sys.executable, str(ROOT / 'selfhost/access.py'), '--install-dir', str(target), '--mode', 'http'])
-                if result.returncode:
+                updated = manifest_at(target)
+                values = validate_saved(target, updated)
+                # External reachability can fail behind NAT while HTTP configuration
+                # is already applied. Still give the usable activation URL.
+                http_pending = (updated.get('access', {}).get('mode') == 'http'
+                                and updated['access'].get('phase') == 'pending'
+                                and not values['WRISTMIND_PUBLIC_BASE_URL'].startswith('http://localhost:'))
+                if result.returncode and not (result.returncode == 1 and http_pending):
                     return result.returncode
-                values = validate_saved(target, manifest_at(target))
             token = values.get('WRISTMIND_SELFHOST_SETUP_TOKEN', '')
             if not re.fullmatch(r'[0-9a-f]{64}', token):
                 raise ValueError('Код активации отсутствует. Эта установка создана до этапа 4; автоматическая замена запрещена.')
+            if sys.stdout.isatty():
+                print("\nСсылка первого входа — скопируйте целиком:")
             print(f"{values['WRISTMIND_PUBLIC_BASE_URL']}/setup#activate={token}")
             return 0
         return install(target, options)

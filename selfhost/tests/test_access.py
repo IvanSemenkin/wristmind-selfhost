@@ -52,6 +52,20 @@ class AccessTest(unittest.TestCase):
         with patch.dict(os.environ, {'SSH_CONNECTION': ''}), patch.object(installer.subprocess, 'run', side_effect=OSError):
             self.assertIsNone(access.detect_server_ip())
 
+    def test_first_login_prints_full_activation_link_even_if_public_probe_is_pending(self):
+        import io
+        import contextlib
+        access.configure(self.target, 'local')
+        def configure_http(*args, **kwargs):
+            self.public.return_value = False
+            code = access.configure(self.target, 'http', expected_ip='203.0.113.10')
+            return subprocess.CompletedProcess([], code)
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['installer', 'setup-link', '--install-dir', str(self.target)]), patch.object(sys.stdin, 'isatty', return_value=True), patch.object(installer.subprocess, 'run', side_effect=configure_http), contextlib.redirect_stdout(output):
+            self.assertEqual(installer.main(), 0)
+        self.assertIn('http://203.0.113.10:8080/setup#activate='+self.values['WRISTMIND_SELFHOST_SETUP_TOKEN'], output.getvalue())
+        self.assertNotIn('http://localhost:8080/setup', output.getvalue())
+
     def test_http_ip_exposes_only_panel_port_and_preserves_secrets(self):
         self.domain()
         self.assertEqual(access.configure(self.target, 'http', expected_ip='203.0.113.10'), 0)
