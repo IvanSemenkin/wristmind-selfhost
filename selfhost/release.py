@@ -16,7 +16,7 @@ import urllib.request
 import installer
 
 RUNTIME = ('compose.yaml', '.env.example', 'wristmind', 'selfhost/installer.py',
-           'selfhost/access.py', 'selfhost/lifecycle.py', 'selfhost/release.py', 'selfhost/resources.py', 'selfhost/local_models.py', 'selfhost/web_search.py',
+           'selfhost/dependencies.py', 'selfhost/access.py', 'selfhost/lifecycle.py', 'selfhost/release.py', 'selfhost/resources.py', 'selfhost/local_models.py', 'selfhost/web_search.py',
            'selfhost/Dockerfile', 'selfhost/search/settings.yml')
 PRIVATE = ('.env', '.wristmind-install', 'compose.access.yaml', 'Caddyfile', '.tunnel-token')
 VERSION = r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'

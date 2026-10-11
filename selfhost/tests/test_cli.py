@@ -67,6 +67,7 @@ class CliTest(unittest.TestCase):
 
     def test_install_failed_preflight_is_not_reported_as_success(self):
         self.tool('docker', 'exit 1')
+        self.tool('sudo', "echo 'Docker Compose недоступен' >&2; exit 1")
         result = self.run_cli('install')
         self.assertEqual(result.returncode, 1)
         self.assertIn('Docker Compose', result.stderr)

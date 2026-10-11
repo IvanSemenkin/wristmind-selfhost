@@ -74,7 +74,7 @@ WristMind — самостоятельная установка
   -h, --help        Справка
 
 Установка из текущих исходников: ./wristmind install --install-dir "$HOME/wristmind-server" --demo
-Docker/Compose должны быть установлены заранее. setup-link выдаёт одноразовую ссылку первого входа.
+На Ubuntu/Debian установка сама подготавливает Docker/Compose и зависимости. setup-link выдаёт одноразовую ссылку первого входа.
 Настройка сейчас или позже: ./wristmind access --install-dir КАТАЛОГ
   --mode local|domain|tunnel|check  Вариант доступа (без параметра — меню)
   --expected-ip IP[,IPv6]         Проверка всех A/AAAA для своего домена
@@ -172,6 +172,27 @@ install() {
   [[ $WM_DEMO == false ]] || arguments+=(--demo)
   [[ $WM_RESUME == false ]] || arguments+=(--resume)
   if ! command -v python3 >/dev/null; then echo 'Нужен Python 3.10+' >&2; return 1; fi
+  if [[ -f $WM_ROOT/selfhost/dependencies.py ]]; then
+    local validation=("${arguments[@]}")
+    validation[0]=validate
+    python3 "$WM_ROOT/selfhost/installer.py" "${validation[@]}" || return $?
+    if [[ $(state) == installed ]]; then
+      python3 "$WM_ROOT/selfhost/installer.py" "${arguments[@]}"
+      return $?
+    fi
+    if ! python3 "$WM_ROOT/selfhost/dependencies.py" --check && (( EUID != 0 )); then
+      if ! command -v sudo >/dev/null; then echo 'Для подготовки зависимостей запустите меню от root; sudo не найден.' >&2; return 1; fi
+      echo 'Для установки зависимостей и Docker требуются root-права; запрашиваю sudo.'
+      sudo bash "$WM_ROOT/wristmind" "${arguments[@]}"
+      local result=$?
+      if [[ $WM_COMMAND == menu ]]; then
+        sudo bash "$WM_ROOT/wristmind" menu --install-dir "$WM_INSTALL_DIR"
+        exit $?
+      fi
+      return "$result"
+    fi
+    python3 "$WM_ROOT/selfhost/dependencies.py" || return $?
+  fi
   python3 "$WM_ROOT/selfhost/installer.py" "${arguments[@]}" || return $?
   if [[ -n $WM_DOMAIN ]]; then
     WM_ACCESS_MODE=${WM_ACCESS_MODE:-domain}
@@ -205,6 +226,19 @@ maintenance() {
   [[ $WM_DEMO == false ]] || arguments+=(--demo)
   [[ $WM_RESUME == false ]] || arguments+=(--resume)
   [[ $WM_NO_SAFETY == false ]] || arguments+=(--no-safety-backup)
+  if [[ $action == install-release && -f $WM_ROOT/selfhost/dependencies.py ]]; then
+    if ! python3 "$WM_ROOT/selfhost/dependencies.py" --check && (( EUID != 0 )); then
+      command -v sudo >/dev/null || { echo 'Для подготовки зависимостей нужны root-права или sudo.' >&2; return 1; }
+      sudo bash "$WM_ROOT/wristmind" "${arguments[@]}" "$@"
+      local result=$?
+      if [[ $WM_COMMAND == menu ]]; then
+        sudo bash "$WM_ROOT/wristmind" menu --install-dir "$WM_INSTALL_DIR"
+        exit $?
+      fi
+      return "$result"
+    fi
+    python3 "$WM_ROOT/selfhost/dependencies.py" || return $?
+  fi
   python3 "$WM_ROOT/selfhost/lifecycle.py" "${arguments[@]}" "$@"
 }
 maintenance_menu() {

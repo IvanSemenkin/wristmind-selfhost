@@ -140,7 +140,7 @@ def validate_saved(target, data):
 
 def payload(staging):
     files = ['compose.yaml', '.dockerignore', '.env.example', 'wristmind', 'selfhost/installer.py',
-             'selfhost/Dockerfile', 'selfhost/access.py', 'selfhost/lifecycle.py', 'selfhost/release.py', 'selfhost/resources.py', 'selfhost/local_models.py', 'selfhost/web_search.py', 'selfhost/search/settings.yml', 'server/pyproject.toml',
+             'selfhost/Dockerfile', 'selfhost/dependencies.py', 'selfhost/access.py', 'selfhost/lifecycle.py', 'selfhost/release.py', 'selfhost/resources.py', 'selfhost/local_models.py', 'selfhost/web_search.py', 'selfhost/search/settings.yml', 'server/pyproject.toml',
              'web/package.json', 'web/package-lock.json', 'web/index.html', 'web/tsconfig.json',
              'web/tsconfig.app.json', 'web/tsconfig.node.json', 'web/vite.config.ts']
     for name in files:
@@ -239,7 +239,25 @@ def search_health(target, data, timeout=60):
         raise RuntimeError('Веб-поиск не прошёл проверку. Повторите команду; данные сохранены.')
 
 
+def validate_install(target, options):
+    if options.domain:
+        raise ValueError('Сначала установите систему, затем выберите настройку HTTPS в меню.')
+    resolved = target.resolve()
+    if target.is_symlink() or resolved.is_relative_to(ROOT) or ROOT.is_relative_to(resolved):
+        raise ValueError('Выберите отдельный каталог вне исходников. Символическая ссылка не допускается.')
+    if state(target) != 'new':
+        data = manifest_at(target)
+        validate_saved(target, data)
+        for key in ('port', 'bind', 'demo'):
+            requested = getattr(options, key)
+            if requested is not None and requested != data.get(key):
+                raise ValueError('Повторная установка не меняет параметры. Конфигурация сохранена.')
+        if data['phase'] != 'ready' and not options.resume:
+            raise ValueError('Есть незавершённая установка. Продолжите её через меню или повторите с --resume; прежние секреты будут сохранены.')
+
+
 def install(target, options):
+    validate_install(target, options)
     if options.domain:
         raise ValueError('Сначала выполните install без --domain, затем access --mode domain --domain ИМЯ --expected-ip IP.')
     resolved = target.resolve()
@@ -309,7 +327,7 @@ def install(target, options):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=['install', 'state', 'setup-link'])
+    parser.add_argument('command', choices=['install', 'validate', 'state', 'setup-link'])
     parser.add_argument('--install-dir', required=True, type=Path)
     parser.add_argument('--port', type=int)
     parser.add_argument('--bind', choices=['127.0.0.1', '0.0.0.0'])
@@ -322,6 +340,9 @@ def main():
     if not target.is_absolute() or target == Path('/') or (options.port is not None and not 1 <= options.port <= 65535) or not 1 <= options.timeout <= 600:
         parser.error('Неверный каталог, порт или время ожидания (1–600 секунд).')
     try:
+        if options.command == 'validate':
+            validate_install(target, options)
+            return 0
         if options.command == 'state':
             print(state(target))
             return 0

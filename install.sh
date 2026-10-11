@@ -4,16 +4,38 @@ set -euo pipefail
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then
   echo 'WristMind: запуск меню без клонирования репозитория.'
   echo 'bash install.sh [menu|check|status|install|...] [параметры wristmind]'
-  echo 'Без параметров открывается меню. Docker устанавливается отдельно.'
+  echo 'Без параметров открывается меню. Зависимости устанавливаются автоматически на Ubuntu/Debian.'
   exit 0
 fi
 if [[ $(uname -s) != Linux ]]; then echo 'Установщик сервера требует Linux.' >&2; exit 1; fi
-for WM_TOOL in curl python3 mktemp; do
+for WM_TOOL in curl mktemp; do
   command -v "$WM_TOOL" >/dev/null || { echo "Для запуска нужен $WM_TOOL." >&2; exit 1; }
 done
-python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' || {
-  echo 'Нужен Python 3.10 или новее.' >&2; exit 1;
-}
+if ! command -v python3 >/dev/null || ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
+  WM_OS_ID=''; WM_OS_CODE=''
+  while IFS='=' read -r WM_OS_KEY WM_OS_VALUE; do
+    if [[ $WM_OS_KEY == ID ]]; then WM_OS_ID=${WM_OS_VALUE//\"/}; fi
+    if [[ $WM_OS_KEY == VERSION_CODENAME || $WM_OS_KEY == UBUNTU_CODENAME ]]; then WM_OS_CODE=${WM_OS_VALUE//\"/}; fi
+  done < /etc/os-release
+  case "$WM_OS_ID:$WM_OS_CODE" in
+    ubuntu:jammy|ubuntu:noble|ubuntu:resolute|debian:bookworm|debian:trixie) ;;
+    *) echo 'Для автоматической подготовки Python нужна Ubuntu 22.04+ или Debian 12/13.' >&2; exit 1;;
+  esac
+  if ! command -v apt-get >/dev/null; then
+    echo 'Для автоматической подготовки Python нужна Ubuntu/Debian. На этой ОС установите Python 3.10+.' >&2; exit 1
+  fi
+  WM_APT=(apt-get)
+  if (( EUID != 0 )); then
+    command -v sudo >/dev/null || { echo 'Для установки Python нужны root-права или sudo.' >&2; exit 1; }
+    WM_APT=(sudo apt-get)
+  fi
+  echo 'Подготавливаю Python и системные утилиты…'
+  "${WM_APT[@]}" update
+  "${WM_APT[@]}" install -y --no-remove python3 ca-certificates curl coreutils iproute2
+  python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' || {
+    echo 'Версия ОС не предоставляет Python 3.10+. Используйте поддерживаемую Ubuntu/Debian.' >&2; exit 1;
+  }
+fi
 WM_TEMP=$(mktemp -d "${TMPDIR:-/tmp}/wristmind-bootstrap.XXXXXXXX")
 trap 'rm -rf -- "$WM_TEMP"' EXIT
 trap 'exit 130' INT
@@ -85,7 +107,12 @@ if [[ $# -eq 0 ]]; then
       WM_DIRECTORY=${WM_CHOICE:-$WM_DIRECTORY}
     fi
   fi
-  bash "$WM_TEMP/source/wristmind" menu --install-dir "$WM_DIRECTORY"
+  if [[ -d $WM_DIRECTORY ]] && { [[ ! -r $WM_DIRECTORY || ! -x $WM_DIRECTORY ]] || { [[ -f $WM_DIRECTORY/.wristmind-install && ! -r $WM_DIRECTORY/.wristmind-install ]]; }; }; then
+    command -v sudo >/dev/null || { echo 'Для доступа к этой установке нужны root-права или sudo.' >&2; exit 1; }
+    sudo bash "$WM_TEMP/source/wristmind" menu --install-dir "$WM_DIRECTORY"
+  else
+    bash "$WM_TEMP/source/wristmind" menu --install-dir "$WM_DIRECTORY"
+  fi
 else
   bash "$WM_TEMP/source/wristmind" "$@"
 fi

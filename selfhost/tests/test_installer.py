@@ -40,6 +40,8 @@ if args[:2] == ['compose', 'version']:
     print(os.environ['TEST_VERSION']); sys.exit(0)
 if args == ['info']:
     sys.exit(1 if os.environ['TEST_FAIL'] == 'info' else 0)
+if args == ['buildx', 'version']:
+    print('github.com/docker/buildx v0.17.0'); sys.exit(0)
 step = next((v for v in args if v in {'config', 'build', 'up', 'exec'}), '')
 if step == 'build':
     env = pathlib.Path(args[args.index('--env-file') + 1]).read_text()
