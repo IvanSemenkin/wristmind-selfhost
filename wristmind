@@ -198,9 +198,9 @@ menu() {
   local choice
   while true; do
     echo; echo 'WristMind · самостоятельная установка'; status
-    echo '1) Проверить требования'; echo '2) Показать состояние'; echo '3) Установить / продолжить установку'; echo '4) Домен / HTTPS / туннель'; echo '5) Обновления и резервные копии'; echo '0) Выход'
+    echo '1) Проверить требования'; echo '2) Показать состояние'; echo '3) Установить / продолжить установку'; echo '4) Домен / HTTPS / туннель'; echo '5) Обновления и резервные копии'; echo '6) Ссылка первого входа'; echo '7) Локальный поиск по смыслу'; echo '8) Настроить веб-поиск'; echo '0) Выход'
     read -r -p '> ' choice || return 0
-    case $choice in 1) check || true;; 2) status;; 3) if [[ $(state) == incomplete ]]; then WM_RESUME=true; fi; install || true;; 4) access || true;; 5) maintenance_menu || true;; 0) return 0;; *) echo 'Выберите 0–5.';; esac
+    case $choice in 1) check || true;; 2) status;; 3) if [[ $(state) == incomplete ]]; then WM_RESUME=true; fi; install || true;; 4) access || true;; 5) maintenance_menu || true;; 6) python3 "$WM_ROOT/selfhost/installer.py" setup-link --install-dir "$WM_INSTALL_DIR" || true;; 7) local_model || true;; 8) python3 "$WM_ROOT/selfhost/web_search.py" --install-dir "$WM_INSTALL_DIR" || true;; 0) return 0;; *) echo 'Выберите 0–8.';; esac
   done
 }
 local_model() {

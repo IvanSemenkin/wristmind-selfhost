@@ -4,27 +4,28 @@
 
 ## 1. Подготовьте сервер
 
-Нужны Linux, Bash, Python 3.10+, Git, Docker Engine и Docker Compose plugin 2.24+. Пользователь терминала должен иметь доступ к Docker. Docker устанавливается отдельно по инструкции для вашей ОС; наш скрипт его автоматически не устанавливает.
+Нужны Linux, Bash, curl, Python 3.10+, Docker Engine и Docker Compose plugin 2.24+. Пользователь терминала должен иметь доступ к Docker. Docker устанавливается отдельно по инструкции для вашей ОС; наш скрипт его автоматически не устанавливает.
 
 Ориентир базовой установки: 2 CPU, около 4 ГБ RAM и 10 ГБ свободного диска. Локальным embeddings потребуется дополнительное место. Проверка установщика оценивает ресурсы, но не гарантирует скорость.
 
-## 2. Скачайте и установите
+## 2. Запустите меню одной командой
 
 ```bash
-git clone https://github.com/IvanSemenkin/wristmind-selfhost.git
-cd wristmind-selfhost
-./wristmind check --install-dir "$HOME/wristmind-server"
-./wristmind install --install-dir "$HOME/wristmind-server"
+bash <(curl -fsSL https://raw.githubusercontent.com/IvanSemenkin/wristmind-selfhost/main/install.sh)
 ```
+
+Ручное клонирование и Git на сервере не нужны. Скрипт скачает исходники во временный каталог, проверит архив и запустит меню. Выберите каталог установки: `/opt/wristmind` для root или `$HOME/wristmind-server` для обычного пользователя. Можно указать другой абсолютный путь.
+
+Выберите «Проверить требования», затем «Установить / продолжить установку». Запуск меню сам по себе не запускает установку. После выхода временные исходники удаляются; файлы установленной системы и данные остаются.
 
 Во время установки нужен интернет. Панель, API, база и обработчик документов работают на одном сервере. Веб-поиск настраивается автоматически. Сохраните выбранный каталог: далее все команды используют его.
 
-Если установка прервалась, не удаляйте файлы и данные. Повторите команду с `--resume`, сохранив прежние параметры. [Подробности](docs/SELF_HOSTING_INSTALL.md).
+Если установка прервалась, не удаляйте файлы и данные. Снова запустите команду curl и выберите «Установить / продолжить установку», сохранив прежний каталог и параметры. [Подробности](docs/SELF_HOSTING_INSTALL.md).
 
 ## 3. Откройте первый вход
 
 ```bash
-./wristmind setup-link --install-dir "$HOME/wristmind-server"
+"$HOME/wristmind-server/wristmind" setup-link --install-dir "$HOME/wristmind-server"
 ```
 
 Ссылка одноразовая и даёт возможность создать владельца системы. Не публикуйте и не пересылайте её.
@@ -46,7 +47,7 @@ ssh -L 8080:127.0.0.1:8080 user@server
 ## 5. Настройте доступ с телефона и часов
 
 ```bash
-./wristmind access --install-dir "$HOME/wristmind-server"
+"$HOME/wristmind-server/wristmind" access --install-dir "$HOME/wristmind-server"
 ```
 
 Выберите домен с HTTPS либо туннель за NAT. Собственный домен необязателен. Для часов нужен доступный им HTTPS-адрес; `localhost` на телефоне означает сам телефон. [Настройка доступа](docs/SELF_HOSTING_ACCESS.md).
@@ -64,7 +65,7 @@ ssh -L 8080:127.0.0.1:8080 user@server
 Для локального поиска по смыслу:
 
 ```bash
-./wristmind local-model --role embedding --install-dir "$HOME/wristmind-server"
+"$HOME/wristmind-server/wristmind" local-model --role embedding --install-dir "$HOME/wristmind-server"
 ```
 
 Скрипт скачает фиксированную модель, проверит её и назначит для поиска. Ключ и ручной выбор модели не нужны. Старые документы нужно повторно обработать. Локальные чатовые, vision и голосовые модели этот скрипт не устанавливает.
@@ -72,7 +73,7 @@ ssh -L 8080:127.0.0.1:8080 user@server
 ## Обновления и помощь
 
 ```bash
-./wristmind menu --install-dir "$HOME/wristmind-server"
+"$HOME/wristmind-server/wristmind" menu --install-dir "$HOME/wristmind-server"
 ```
 
 Обновление сервера, backup и откат доступны только в терминале. Не очищайте Docker volumes ради исправления ошибки. [Обслуживание](docs/SELF_HOSTING_RELEASES.md), [проверка перед стабильным выпуском](docs/PUBLIC_RELEASE_CHECKLIST.md).

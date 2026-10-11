@@ -12,7 +12,7 @@ import shutil
 import tempfile
 
 FILES = ('.gitignore', '.dockerignore', '.env.example', 'README.md', 'SETUP.md', 'DESIGN_SYSTEM.md',
-         'RELEASE_NOTES.md', 'compose.yaml', 'wristmind')
+         'RELEASE_NOTES.md', 'compose.yaml', 'wristmind', 'install.sh')
 TREES = ('selfhost', 'server/src', 'server/tests', 'web/src', 'web/public',
          'android/core', 'android/phone', 'android/wear', 'android/panel',
          'android/gradle', 'assets/branding', '.github/workflows')

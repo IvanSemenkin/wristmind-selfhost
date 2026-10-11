@@ -47,17 +47,19 @@ flowchart LR
 
 Нужны Linux, Python 3.10+, Docker Engine и Docker Compose plugin 2.24+. Скрипт проверит процессор, память, диск и свободный порт. Оценка ресурсов не гарантирует конкретную скорость.
 
-Скачайте исходники на сервер и перейдите в каталог:
+Запустите одну команду на сервере:
 
 ```bash
-git clone https://github.com/IvanSemenkin/wristmind-selfhost.git
-cd wristmind-selfhost
-./wristmind check --install-dir "$HOME/wristmind-server"
-./wristmind install --install-dir "$HOME/wristmind-server"
-./wristmind setup-link --install-dir "$HOME/wristmind-server"
+bash <(curl -fsSL https://raw.githubusercontent.com/IvanSemenkin/wristmind-selfhost/main/install.sh)
 ```
 
-Последняя команда выдаст одноразовую ссылку первого входа. Не пересылайте её другим людям. По умолчанию HTTP слушает только этот сервер; для временного доступа с компьютера используйте SSH-forward:
+Откроется меню: выберите каталог, проверьте требования и нажмите «Установить / продолжить установку». Через это же меню доступны HTTPS, состояние, обновления и резервные копии. Повторный запуск команды открывает меню для существующей установки; данные не удаляются. Для первого входа после установки:
+
+```bash
+"$HOME/wristmind-server/wristmind" setup-link --install-dir "$HOME/wristmind-server"
+```
+
+Замените каталог на выбранный при установке (для root по умолчанию `/opt/wristmind`). Последняя команда выдаст одноразовую ссылку первого входа. Не пересылайте её другим людям. По умолчанию HTTP слушает только этот сервер; для временного доступа с компьютера используйте SSH-forward:
 
 ```bash
 ssh -L 8080:127.0.0.1:8080 user@server
