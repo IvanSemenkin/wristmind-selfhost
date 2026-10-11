@@ -35,6 +35,23 @@ class AccessTest(unittest.TestCase):
     def domain(self):
         return access.configure(self.target, 'domain', 'ai.example.org', '203.0.113.10')
 
+    def test_ip_detection_uses_server_side_of_ssh_connection(self):
+        with patch.dict(os.environ, {'SSH_CONNECTION': '1.1.1.1 1234 8.8.8.8 22'}), patch.object(installer.subprocess, 'run') as run:
+            self.assertEqual(access.detect_server_ip(), '8.8.8.8')
+            run.assert_not_called()
+
+    def test_ip_detection_queries_public_ip_for_private_ssh_destination(self):
+        reply = subprocess.CompletedProcess([], 0, '9.9.9.9\n', '')
+        with patch.dict(os.environ, {'SSH_CONNECTION': '1.1.1.1 1234 192.168.1.2 22'}), patch.object(installer.subprocess, 'run', return_value=reply):
+            self.assertEqual(access.detect_server_ip(), '9.9.9.9')
+
+    def test_ip_detection_failure_keeps_lan_destination_or_requires_manual_input(self):
+        reply = subprocess.CompletedProcess([], 0, 'invalid-address', '')
+        with patch.dict(os.environ, {'SSH_CONNECTION': '1.1.1.1 1234 192.168.1.2 22'}), patch.object(installer.subprocess, 'run', return_value=reply):
+            self.assertEqual(access.detect_server_ip(), '192.168.1.2')
+        with patch.dict(os.environ, {'SSH_CONNECTION': ''}), patch.object(installer.subprocess, 'run', side_effect=OSError):
+            self.assertIsNone(access.detect_server_ip())
+
     def test_http_ip_exposes_only_panel_port_and_preserves_secrets(self):
         self.domain()
         self.assertEqual(access.configure(self.target, 'http', expected_ip='203.0.113.10'), 0)

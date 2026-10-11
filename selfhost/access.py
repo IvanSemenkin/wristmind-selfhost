@@ -20,6 +20,31 @@ import installer
 FILES = ('.env', '.wristmind-install', 'compose.access.yaml', 'Caddyfile', '.tunnel-token')
 
 
+def detect_server_ip():
+    """Prefer the public SSH destination; do not confuse it with the client IP."""
+    def address(value):
+        try:
+            ip = ipaddress.IPv4Address(value)
+            return ip if not (ip.is_loopback or ip.is_unspecified or ip.is_multicast or ip.is_link_local) else None
+        except ValueError:
+            return None
+    connection = os.environ.get('SSH_CONNECTION', '').split()
+    ssh_ip = address(connection[2]) if len(connection) == 4 else None
+    if ssh_ip and ssh_ip.is_global:
+        return str(ssh_ip)
+    try:
+        result = installer.subprocess.run(
+            ['curl', '--ipv4', '--fail', '--silent', '--show-error', '--proto', '=https',
+             '--connect-timeout', '3', '--max-time', '5', 'https://api.ipify.org'],
+            capture_output=True, text=True, timeout=7, env=installer.docker_environment())
+        public = address(result.stdout.strip()) if result.returncode == 0 else None
+        if public and public.is_global:
+            return str(public)
+    except (OSError, installer.subprocess.SubprocessError):
+        pass
+    return str(ssh_ip) if ssh_ip else None
+
+
 def domain_name(value):
     try:
         host = value.strip().rstrip('.').encode('idna').decode('ascii').lower()
@@ -261,8 +286,13 @@ def main():
             options.tunnel_token_file = Path(input('Путь к файлу токена: ').strip()).expanduser()
     if options.mode == 'http':
         print('HTTP по IP: микрофон браузера недоступен, соединение не шифруется.')
-        if not options.expected_ip and sys.stdin.isatty():
-            options.expected_ip = input('IP сервера, доступный с телефона: ').strip()
+        if not options.expected_ip:
+            print('Определяю IP сервера…', flush=True)
+            options.expected_ip = detect_server_ip()
+            if options.expected_ip:
+                print(f'Адрес найден: http://{options.expected_ip}. Использую выбранный порт установки.', flush=True)
+            elif sys.stdin.isatty():
+                options.expected_ip = input('Не удалось определить адрес. IP сервера: ').strip()
     try:
         return configure(options.install_dir, options.mode, options.domain, options.expected_ip, options.tunnel_token_file)
     except (OSError, ValueError, RuntimeError, installer.subprocess.SubprocessError) as error:
