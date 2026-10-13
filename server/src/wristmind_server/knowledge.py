@@ -68,6 +68,7 @@ async def extract_document(
 ) -> ExtractedDocument:
     from .feature_capabilities import enabled
     if not enabled(settings, 'digitization'): raise ValueError('Оцифровка отключена в настройках сервера')
+    from .resource_controller import resources
     if processing_mode == "WEB":
         text = normalize_text(path.read_text(encoding="utf-8"))
         if not text:
@@ -76,12 +77,13 @@ async def extract_document(
     if processing_mode == "VISION":
         try:
             text = normalize_text(await provider.analyze_file(path, media_type))
-            pages = len(PdfReader(str(path)).pages) if path.suffix.lower() == ".pdf" else 1
+            pages = await resources().thread('pdf', lambda: len(PdfReader(str(path)).pages)) if path.suffix.lower() == ".pdf" else 1
             return ExtractedDocument(text, pages, "vision")
         except ProviderError:
             if not settings.mock_providers:
                 raise
-    return extract_ocr(path, media_type, settings.max_pdf_pages)
+    kind = 'pdf' if media_type == 'application/pdf' or path.suffix.lower() == '.pdf' else 'ocr'
+    return await resources().thread(kind, extract_ocr, path, media_type, settings.max_pdf_pages)
 
 
 def _chunk_text(text: str, target_chars: int) -> list[str]:

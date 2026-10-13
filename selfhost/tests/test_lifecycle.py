@@ -330,6 +330,30 @@ class AdditionalRecoveryTest(unittest.TestCase):
 if __name__ == '__main__':
     unittest.main()
 
+    def test_backup_selection_confirmation_and_sidecar_integrity(self):
+        package, checksum = lifecycle.backup(self.target)
+        self.assertEqual(package.with_name(package.name + '.sha256').read_text().split(), [checksum, package.name])
+        calls = len(self.calls)
+        with patch('builtins.input', side_effect=['wrong', '1', 'нет']):
+            self.assertIsNone(lifecycle.choose_backup(self.target))
+        self.assertEqual(len(self.calls), calls)
+        with patch('builtins.input', side_effect=['1', 'да']):
+            self.assertEqual(lifecycle.choose_backup(self.target), (package, checksum, self.data['project']))
+        self.assertEqual(len(self.calls), calls)
+        package.with_name(package.name + '.sha256').write_text('f' * 64 + '  ' + package.name)
+        with patch('builtins.input', side_effect=['1']):
+            with self.assertRaises(ValueError):
+                lifecycle.choose_backup(self.target)
+
+    def test_legacy_backups_without_sidecar_and_empty_list(self):
+        self.assertIsNone(lifecycle.choose_backup(self.target))
+        package, checksum = lifecycle.backup(self.target)
+        package.with_name(package.name + '.sha256').unlink()
+        with patch('builtins.input', side_effect=['1', 'да']):
+            self.assertEqual(lifecycle.choose_backup(self.target), (package, checksum, self.data['project']))
+        with patch('builtins.input', return_value='0'):
+            self.assertIsNone(lifecycle.choose_backup(self.target))
+
 
 class OciIdentityTest(unittest.TestCase):
     def test_config_and_oci_identity_are_linked_not_merely_accepted(self):

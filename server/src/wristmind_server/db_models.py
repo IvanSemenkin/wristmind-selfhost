@@ -311,6 +311,13 @@ class RawWebSource(Base):
     content: Mapped[str] = mapped_column(Text)
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
     retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # content remains the original provenance snapshot. Refreshes never erase it.
+    full_content: Mapped[str | None] = mapped_column(Text)
+    extraction_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cache_kind: Mapped[str | None] = mapped_column(String(20))
+    cache_bytes: Mapped[int | None] = mapped_column(Integer)
 
 
 class KnowledgeChunk(Base):

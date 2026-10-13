@@ -83,9 +83,11 @@ class MaintenanceMenuTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             script = Path(directory) / 'menu.sh'
             script.write_text(code)
-            result = subprocess.run(['bash', str(script)], input='\r\nwrong\r\n1\r\n0\r\n',
+            result = subprocess.run(['bash', str(script)], input='\r\nwrong\r\n1\r\n4\r\n0\r\n',
                                     text=True, capture_output=True, timeout=5)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('OPERATION:version', result.stdout)
+        self.assertIn('OPERATION:restore-menu', result.stdout)
+        self.assertNotIn('Путь к пакету:', result.stdout)
         self.assertIn('FINISHED', result.stdout)
         self.assertGreaterEqual(result.stdout.count('Обновления и резервные копии'), 3)

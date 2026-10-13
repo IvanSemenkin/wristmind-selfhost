@@ -79,24 +79,23 @@ def test_known_links_do_not_replace_a_requested_search():
     assert quiet.searches == 0
 
 
-def test_open_floor_finishes_a_download_the_loop_clock_cannot_afford():
-    """A slow read on a slow host must not be cancelled after it was paid for."""
+def test_open_floor_cannot_extend_the_total_search_deadline():
+    """Admission and downloads must obey the common search budget."""
     async def slow_open(*args):
         await asyncio.sleep(.3)
         return ITEM.url, '## Страница 17\nБревна в воде.'
     result = run(max_seconds=.04, open_page=slow_open, open_floor_seconds=1.0)
-    assert result.opened and result.source == 'saved'
-    # The clock really was exhausted: the floor is a guarantee, not extra time.
+    assert not result.opened and result.source is None
     assert result.timed_out
 
 
-def test_save_floor_completes_the_extraction_of_an_opened_page():
+def test_save_floor_cannot_extend_the_total_search_deadline():
     """Classification plus extraction are two model calls, not one instant write."""
     async def slow_save(*args):
         await asyncio.sleep(.3)
         return 'saved'
     result = run(max_seconds=.04, save=slow_save, save_floor_seconds=1.0)
-    assert result.opened and result.source == 'saved' and result.timed_out
+    assert result.opened and result.source is None and result.timed_out
 
 
 def test_exact_text_gate_forces_a_read_instead_of_answering_from_snippets():
@@ -211,7 +210,7 @@ def test_worker_reuses_database_reference_and_cached_pdf_without_network(client,
         async with SessionFactory() as session:
             session.add(ReferencedWebSource(chat_id=chat['id'], url=ITEM.url, title=ITEM.title, snippet=ITEM.snippet))
             session.add(RawWebSource(chat_id=chat['id'], url=ITEM.url, title=ITEM.title,
-                content=page, content_hash=hashlib.sha256(page.encode()).hexdigest()))
+                content=page, content_hash=hashlib.sha256(page.encode()).hexdigest(), extraction_version=1))
             await session.commit()
     asyncio.run(setup())
     async def route(*args, **kwargs):

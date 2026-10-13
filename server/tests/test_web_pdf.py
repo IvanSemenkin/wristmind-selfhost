@@ -123,10 +123,19 @@ def test_pdf_is_saved_as_chat_source_after_another_page_fails(client, admin_head
         return 'задача 12'
     async def anchor(model_id, question):
         return worker.lightweight_request_anchor(question)
-    actions = iter([worker.WebAgentAction(action='open', result_id='r1'),
-                    worker.WebAgentAction(action='open', result_id='r2'), worker.WebAgentAction(action='answer')])
-    async def action(*a, **kw):
-        return next(actions)
+    failed_id = None
+    async def action(_model_id, _anchor, active_query, results, inspected, previous, **kw):
+        nonlocal failed_id
+        # Candidate IDs follow ranking now; select the broken URL explicitly
+        # so this remains a failure-recovery test, not a SearXNG-order test.
+        for suffix in ('/broken', '/tasks.pdf'):
+            candidate = next((key for key, value in results.items()
+                              if value.url.endswith(suffix) and key not in inspected), None)
+            if candidate:
+                if suffix == '/broken':
+                    failed_id = candidate
+                return worker.WebAgentAction(action='open', result_id=candidate)
+        return worker.WebAgentAction(action='answer')
     async def foundation(*a, **kw):
         return True
     async def excerpt(model_id, question, title, page, **kw):
@@ -151,7 +160,9 @@ def test_pdf_is_saved_as_chat_source_after_another_page_fails(client, admin_head
     messages = client.get(f"/v1/chats/{chat['id']}/messages", headers=admin_headers).json()
     assert 'Поиск источников временно недоступен' not in messages[-1]['content']
     assert 'сохранил' in messages[-1]['content']
-    assert messages[-1]['timings']['web_search']['page_errors'][0]['result_id'] == 'r1'
+    assert messages[-1]['timings']['web_search']['page_errors'][0]['result_id'] == failed_id
+    assert 'HTTP 413' in messages[-1]['timings']['web_search']['page_errors'][0]['reason']
+    assert messages[-1]['timings']['web_search']['completion'] == 'partially_verified'
     assert client.get(f"/v1/jobs/{job['id']}", headers=admin_headers).json()['status'] == 'complete'
     async def source():
         async with SessionFactory() as s:

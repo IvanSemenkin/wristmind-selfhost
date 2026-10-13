@@ -39,6 +39,7 @@ jobs:
         run: |
           python -m pip install './server[dev]'
           python -m pytest selfhost/tests -q
+          python -m pytest server/tests/test_adaptive_concurrency.py server/tests/test_search_reliability.py -q
       - name: Build allowlisted release package
         env:
           RELEASE_TAG: ${{ github.ref_name }}

@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
 import json
+import pytest
+from wristmind_server.search_agent import PlannerFailure
 from types import SimpleNamespace
 
 from sqlalchemy import select
@@ -68,8 +70,8 @@ def test_planner_accepts_only_exact_schema_and_known_result_id(monkeypatch):
         yield '{"action":"open","url":"https://attacker.example"}'
 
     monkeypatch.setattr(providers, "stream_answer", bad_stream)
-    action = asyncio.run(choose_web_action("mock:test", anchor("Вопрос"), "Вопрос", results, {}, None))
-    assert action.action == "answer"
+    with pytest.raises(PlannerFailure):
+        asyncio.run(choose_web_action("mock:test", anchor("Вопрос"), "Вопрос", results, {}, None))
 
 
 def test_planner_receives_opened_page_and_updated_evidence(monkeypatch):
@@ -142,11 +144,10 @@ def test_planner_refuses_a_second_search_without_retrieval_purpose(monkeypatch):
 
     monkeypatch.setattr(providers, "stream_answer", stream)
     results = {"r1": WebSearchResult("Источник", "https://example.org", "Факт")}
-    action = asyncio.run(choose_web_action(
-        "mock:test", anchor("Сравни две версии WristMind"), "версии WristMind", results, {}, None,
-    ))
-
-    assert action.action == "answer"
+    with pytest.raises(PlannerFailure):
+        asyncio.run(choose_web_action(
+            "mock:test", anchor("Сравни две версии WristMind"), "версии WristMind", results, {}, None,
+        ))
 
 
 def test_router_uses_current_chat_source_before_the_internet(monkeypatch):
@@ -778,10 +779,11 @@ def test_saved_working_source_stays_complete_for_follow_ups(
 
     source_id, total, stored, presented, saved_hash, saved_length, states = asyncio.run(run())
 
-    # The document itself is stored in full, with its own hash and offsets.
-    assert stored == LONG_SOURCE
-    assert saved_hash == hashlib.sha256(LONG_SOURCE.encode("utf-8")).hexdigest()
-    assert saved_length == len(LONG_SOURCE)
+    # Preserve the entire extracted HTML document, including its trailing text.
+    # Model-selected excerpts must not silently truncate a whole-original request.
+    assert stored == page
+    assert saved_hash == hashlib.sha256(page.encode("utf-8")).hexdigest()
+    assert saved_length == len(page)
     assert total == 1
     assert states[-3:] == ["evaluating_source", "extracting_source", "saving_source"]
 

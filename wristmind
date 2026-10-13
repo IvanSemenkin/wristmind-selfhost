@@ -267,18 +267,12 @@ maintenance_menu() {
   case $action in
     1) maintenance version;;
     2) maintenance update --latest;;
-    4|7)
+    4) maintenance restore-menu;;
+    7)
       read -r -p 'Путь к пакету: ' package || return 0
       read -r -p 'SHA256 из доверенного источника: ' checksum || return 0
-      if [[ $action == 2 ]]; then maintenance update --package "$package" --sha256 "$checksum"
-      elif [[ $action == 7 ]]; then
-        if [[ $(state) == incomplete ]]; then WM_RESUME=true; fi
-        maintenance install-release --package "$package" --sha256 "$checksum"
-      else
-        echo 'Восстановление заменит нынешние данные состоянием из бэкапа.'
-        read -r -p 'Имя проекта для подтверждения: ' project || return 0
-        maintenance restore --package "$package" --sha256 "$checksum" --confirm-project "$project"
-      fi;;
+      if [[ $(state) == incomplete ]]; then WM_RESUME=true; fi
+      maintenance install-release --package "$package" --sha256 "$checksum";;
     3) maintenance backup;;
     5|6)
       maintenance version || return $?

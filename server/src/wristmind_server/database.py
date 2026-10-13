@@ -254,6 +254,28 @@ async def init_database() -> None:
                     "ON chats (user_id, client_request_id) WHERE client_request_id IS NOT NULL"
                 )
             )
+        # Metadata-only lazy upgrade: legacy text and user sources remain intact.
+        if connection.dialect.name == "postgresql":
+            await connection.execute(text("ALTER TABLE raw_web_sources ADD COLUMN IF NOT EXISTS full_content TEXT"))
+            await connection.execute(text("ALTER TABLE raw_web_sources ADD COLUMN IF NOT EXISTS extraction_version INTEGER NOT NULL DEFAULT 0"))
+        elif connection.dialect.name == "sqlite":
+            columns = (await connection.execute(text("PRAGMA table_info(raw_web_sources)"))).mappings().all()
+            names = {column["name"] for column in columns}
+            if "full_content" not in names:
+                await connection.execute(text("ALTER TABLE raw_web_sources ADD COLUMN full_content TEXT"))
+            if "extraction_version" not in names:
+                await connection.execute(text("ALTER TABLE raw_web_sources ADD COLUMN extraction_version INTEGER NOT NULL DEFAULT 0"))
+        # Cache policy metadata only; no backfill, eviction or user-data changes.
+        cache_columns = {"last_checked_at": "TIMESTAMP WITH TIME ZONE", "last_accessed_at": "TIMESTAMP WITH TIME ZONE",
+                         "cache_kind": "VARCHAR(20)", "cache_bytes": "INTEGER"}
+        if connection.dialect.name == "postgresql":
+            for name, sql_type in cache_columns.items():
+                await connection.execute(text(f"ALTER TABLE raw_web_sources ADD COLUMN IF NOT EXISTS {name} {sql_type}"))
+        elif connection.dialect.name == "sqlite":
+            names = {column["name"] for column in (await connection.execute(text("PRAGMA table_info(raw_web_sources)"))).mappings()}
+            for name, sql_type in cache_columns.items():
+                if name not in names:
+                    await connection.execute(text(f"ALTER TABLE raw_web_sources ADD COLUMN {name} {sql_type}"))
         # Upgrade only known factory defaults; never overwrite user instructions.
         await connection.execute(
             text("UPDATE app_settings SET global_system_prompt = :current "

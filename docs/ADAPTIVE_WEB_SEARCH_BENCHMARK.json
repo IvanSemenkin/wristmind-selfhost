@@ -1,0 +1,52 @@
+{
+  "mock_parser": {
+    "sequential": {
+      "samples": 5,
+      "p50_ms": 227.945,
+      "p95_ms": 320.41,
+      "planner_calls": [
+        2
+      ],
+      "http_peak": 1,
+      "html_peak": 1,
+      "event_loop_ticks_min": 41
+    },
+    "parallel": {
+      "samples": 5,
+      "p50_ms": 133.887,
+      "p95_ms": 134.454,
+      "planner_calls": [
+        2
+      ],
+      "http_peak": 2,
+      "html_peak": 1,
+      "event_loop_ticks_min": 26
+    },
+    "p50_reduction_percent": 41.26
+  },
+  "real_trafilatura": {
+    "sequential": {
+      "samples": 5,
+      "p50_ms": 591.334,
+      "p95_ms": 607.101,
+      "planner_calls": [
+        2
+      ],
+      "http_peak": 1,
+      "html_peak": 1,
+      "event_loop_ticks_min": 105
+    },
+    "parallel": {
+      "samples": 5,
+      "p50_ms": 462.018,
+      "p95_ms": 492.856,
+      "planner_calls": [
+        2
+      ],
+      "http_peak": 2,
+      "html_peak": 1,
+      "event_loop_ticks_min": 88
+    },
+    "p50_reduction_percent": 21.87
+  }
+}

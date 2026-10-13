@@ -4,7 +4,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, BaseModel, Field, SecretStr, field_validator
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .provider_connections import ProviderConnection
@@ -123,11 +123,28 @@ class Settings(BaseSettings):
     web_search_timeout_seconds: float = 12.0
     web_search_results_limit: int = 5
     web_open_timeout_seconds: float = 8.0
-    web_open_max_download_bytes: int = 2_000_000
+    web_open_max_download_bytes: int = Field(default=2_000_000, ge=1, le=8_000_000)
+    web_html_max_document_chars: int = Field(default=1_000_000, ge=12_000, le=4_000_000)
+    web_model_fragment_chars: int = Field(default=12_000, ge=2_048, le=32_000)
+    web_html_memory_mb: int = Field(default=256, ge=128, le=512)
+    web_html_extract_seconds: float = Field(default=12.0, gt=0, le=60)
+    resource_busy_memory_mb: int = Field(default=900, ge=256, le=8192)
+    resource_critical_memory_mb: int = Field(default=500, ge=128, le=4096)
+    resource_hysteresis_memory_mb: int = Field(default=150, ge=32, le=1024)
+    resource_free_memory_mb: int = Field(default=1400, ge=512, le=16384)
+    resource_wait_seconds: float = Field(default=10.0, gt=0, le=30)
+    resource_max_waiters: int = Field(default=32, ge=1, le=128)
+    web_comparison_parallel_read: bool = True
+    web_cache_news_ttl_seconds: int = Field(default=3600, ge=0)
+    web_cache_page_ttl_seconds: int = Field(default=86400, ge=0)
+    web_cache_document_ttl_seconds: int = Field(default=604800, ge=0)
+    web_cache_static_ttl_seconds: int = Field(default=7776000, ge=0)
+    web_cache_max_entries: int = Field(default=512, ge=0)
+    web_cache_max_bytes: int = Field(default=64_000_000, ge=0)
     web_open_max_redirects: int = 3
     web_agent_max_steps: int = 6
     web_agent_max_searches: int = 3
-    web_agent_max_opened_pages: int = 2
+    web_agent_max_opened_pages: int = Field(default=2, ge=1, le=4)
     # The loop's own budget covers planning, searching and opening. It is
     # measured from before request framing, so framing time is already taken out
     # of it. 30 s was too small for one save-source turn: two planner calls, a
@@ -196,6 +213,12 @@ class Settings(BaseSettings):
     latency_telegram_bot_token: SecretStr | None = None
     # Optional explicit chat id. When unset, telegram_owner_id is used.
     latency_telegram_chat_id: str | None = None
+
+    @model_validator(mode='after')
+    def validate_resource_thresholds(self):
+        if not self.resource_critical_memory_mb < self.resource_busy_memory_mb < self.resource_free_memory_mb:
+            raise ValueError('Resource thresholds must satisfy critical < busy < free')
+        return self
 
     @field_validator("allowed_models", "cors_origins", mode="before")
     @classmethod

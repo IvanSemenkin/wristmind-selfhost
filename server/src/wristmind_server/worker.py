@@ -29,13 +29,17 @@ from .identity import CORE_IDENTITY_PROMPT
 from .chat_memory import (ConversationState, MemoryEnvelope, MEMORY_PROMPT, MEMORY_TRIGGER_TOKENS,
                           MEMORY_STATE_TOKENS, history_tokens, memory_context, read_memory,
                           transcript_batches, uncompacted_messages)
-from . import account_events, latency_trace
+from . import account_events, latency_trace, search_trace
 from .providers import ProviderError, ProviderRouter, StreamTiming, provider_attempt_diagnostics
 from .push import schedule_watch_state_changed
 from .source_prompts import DEFAULT_SOURCE_CANDIDATE_PROMPT, DEFAULT_SOURCE_INTENT_PROMPT
 from .telegram_bot import notify_answer
 from .web_search import WebSearchResult, WebSearchUnavailable, open_web_page, search_web, web_page_prompt, web_search_prompt
-from .search_agent import run_search_agent
+from .search_agent import run_search_agent, PlannerFailure
+from .search_ranking import (comparison_requested, rank_candidate, self_contained_source_query,
+                             primary_document_requested, secondary_material)
+from .web_cache import cache_document, reusable_document
+from .resource_controller import resources, resource_operation, ResourceUnavailable, ResourceUnavailable
 from .search_documents import DocumentView, focused_text
 
 
@@ -210,11 +214,12 @@ class SourceBoundaries(BaseModel):
     end_text: str | None = Field(default=None, min_length=1, max_length=120)
 
 
+@search_trace.purpose("source_excerpt")
 async def extract_working_excerpt(model_id: str, question: str, title: str, page: str, *, excerpt_only: bool = False,
                                   focus_query: str | None = None) -> SourceExtraction | None:
     view = DocumentView(page)
     selection_query = focus_query or question.rsplit("Текущий запрос: ", 1)[-1]
-    numbered, visible = view.numbered_lines(selection_query)
+    numbered, visible = view.numbered_lines(selection_query, max_chars=settings.web_model_fragment_chars)
     prompt = (
         "Выбери границы нужного пользователю материала в исходном документе. "
         "Верни JSON {\"title\":\"название\",\"start_line\":0,\"end_line\":0}. "
@@ -350,7 +355,7 @@ def read_working_source_text(source: KnowledgeSource) -> str:
     try:
         return Path(source.storage_path).read_text(encoding="utf-8")
     except OSError:
-        logger.warning("Working Source %s is not readable from %s", source.id, source.storage_path)
+        logger.warning("Working Source %s is not readable", source.id)
         return ""
 
 
@@ -403,6 +408,7 @@ def saved_source_window(
     return source, window, page
 
 
+@search_trace.purpose("source_intent")
 async def should_seek_working_source(
     model_id: str, question: str, history: list[Message],
     system_prompt: str = DEFAULT_SOURCE_INTENT_PROMPT,
@@ -431,6 +437,7 @@ async def should_seek_working_source(
         return False
 
 
+@search_trace.purpose("source_validation")
 async def is_foundational_source(
     model_id: str, question: str, history: list[Message], title: str, url: str, page: str,
     explicitly_requested: bool = False,
@@ -446,17 +453,20 @@ async def is_foundational_source(
         "проверяй соответствие открытой страницы этому тексту; явное обещание дальнейшей "
         "работы не требуется. Не принимай страницу, где текст лишь упомянут.\n"
         f"Предварительное намерение найти опорный материал: {'да' if explicitly_requested else 'нет'}.\n"
-        f"Диалог:\n{conversation}\nВопрос: {question}\nНазвание: {title}\nURL: {url}\nТекст:\n{focused_text(page, question)}"
+        f"Диалог:\n{conversation}\nВопрос: {question}\nНазвание: {title}\nURL: {url}\nТекст:\n{focused_text(page, question, max_chars=settings.web_model_fragment_chars)}"
     )
     prompt = render_prompt("is_foundational_source", prompt, {
         "system_prompt": system_prompt.strip(),
         "'да' if explicitly_requested else 'нет'": "да" if explicitly_requested else "нет",
         "conversation": conversation, "question": question, "title": title,
-        "url": url, "page[:5000]": focused_text(page, question),
+        "url": url, "page[:5000]": focused_text(page, question, max_chars=settings.web_model_fragment_chars),
     })
+    prompt += ('\nВерни только JSON {"foundation":true} или {"foundation":false}. '
+               'Комментарий, пересказ или статья о произведении не являются самим оригиналом. '
+               'Наличие заголовков всех глав само по себе недостаточно для признания оригиналом.')
     try:
         raw = "".join([chunk async for chunk in providers.stream_answer(model_id, [{"role": "system", "content": prompt}], thinking=False)])
-        return WorkingSourceDecision.model_validate_json(raw.strip()).foundation
+        return WorkingSourceDecision.model_validate_json(extract_json_object(raw)).foundation
     except (ProviderError, ValidationError, ValueError):
         return False
 
@@ -469,11 +479,15 @@ async def create_source_candidate(
     focus_query: str | None = None,
 ) -> KnowledgeSource | None:
     """Store the requested material, preserving excerpt scope and exact provenance."""
+    if primary_document_requested(question) and secondary_material(title, page):
+        search_trace.event("SOURCE_REJECTED", url_hash=search_trace.fingerprint(url), reason="secondary_not_original")
+        return None
     await emit(job_id, "state", {"state": "evaluating_source"})
     if not await is_foundational_source(
         model_id, question, history, title, url,
-        focused_text(page, focus_query) if focus_query else page, explicitly_requested, system_prompt,
+        focused_text(page, focus_query, max_chars=settings.web_model_fragment_chars) if focus_query else page, explicitly_requested, system_prompt,
     ):
+        search_trace.event("SOURCE_REJECTED", url_hash=search_trace.fingerprint(url), reason="source_validation_failed")
         return None
     parent_job = await session.get(Job, job_id)
     if parent_job is None:
@@ -486,9 +500,14 @@ async def create_source_candidate(
     extraction_kwargs = {"excerpt_only": excerpt_only}
     if focus_query:
         extraction_kwargs["focus_query"] = focus_query
-    extraction = await extract_working_excerpt(model_id, extraction_question, title, page, **extraction_kwargs)
-    is_document = bool(re.search(r"(?m)^## Страница \d+", page))
+    # An explicit whole-material save preserves HTML just like a PDF. Selecting
+    # a model excerpt would silently discard most of the requested document.
+    whole_document = explicitly_requested and bool(primary_document_requested(question) or (
+        not excerpt_only and SAVE_SOURCE_REQUEST.search(question)))
+    extraction = None if whole_document and not excerpt_only else await extract_working_excerpt(model_id, extraction_question, title, page, **extraction_kwargs)
+    is_document = whole_document or bool(re.search(r"(?m)^## Страница \d+", page))
     if extraction is None and not is_document:
+        search_trace.event("SOURCE_REJECTED", url_hash=search_trace.fingerprint(url), reason="excerpt_unverified")
         return None
     # A verified PDF stays available even when selection of a particular task
     # fails. The selected passage is only the presentation for this turn.
@@ -507,17 +526,7 @@ async def create_source_candidate(
         duplicate._selected_excerpt = extraction.excerpt if extraction else ""
         return duplicate
     await emit(job_id, "state", {"state": "saving_source"})
-    raw = await session.scalar(select(RawWebSource).where(RawWebSource.chat_id == chat.id, RawWebSource.url == url))
-    if raw is None:
-        raw = RawWebSource(
-            chat_id=chat.id,
-            url=url,
-            title=title[:240],
-            content=page,
-            content_hash=hashlib.sha256(page.encode("utf-8")).hexdigest(),
-        )
-        session.add(raw)
-        await session.flush()
+    raw = await cache_document(session, chat.id, title, url, page, protect=True, refreshed=False)
     start = page.find(content)
     source_id = str(uuid4())
     target_dir = settings.storage_dir / "sources" / source_id
@@ -562,10 +571,12 @@ async def create_source_candidate(
     return source
 
 
-def primary_source_results(results: dict[str, WebSearchResult], opened_ids: set[str]) -> list[tuple[str, WebSearchResult]]:
+def primary_source_results(results: dict[str, WebSearchResult], opened_ids: set[str], query: str = "") -> list[tuple[str, WebSearchResult]]:
     """Prefer pages explicitly labelled as texts, and avoid answer-key pages."""
-    def score(item: tuple[str, WebSearchResult]) -> int:
+    def score(item: tuple[str, WebSearchResult]) -> float:
         _, result = item
+        if query:
+            return rank_candidate(query, result).score
         value = f"{result.title} {result.snippet}".lower()
         return (
             4 * int("текст" in value or "первоисточник" in value)
@@ -737,8 +748,11 @@ async def claim_job() -> str | None:
         if session.bind and session.bind.dialect.name == "postgresql":
             query = query.with_for_update(skip_locked=True)
         jobs = (await session.scalars(query)).all()
+        if jobs:
+            resources().refresh()
         now = utcnow()
-        job = next((item for item in jobs if _job_is_ready(item, now)), None)
+        job = next((item for item in jobs if _job_is_ready(item, now)
+                    and not (item.kind == 'INGEST' and resources().mode != 'NORMAL')), None)
         if job is None:
             return None
         job.status = "running"
@@ -1187,6 +1201,41 @@ def router_error_status(exc: BaseException) -> Literal["network_error", "timeout
     return "network_error"
 
 
+def safeguard_save_followup(route: RetrievalRoute, request: str, *, has_links: bool) -> RetrievalRoute:
+    """Saving a previous result is not an implicit ban on fetching that result."""
+    if not (SAVE_SOURCE_REQUEST.search(request) and has_links):
+        return route
+    if route.intents.wants_no_web and re.search(r'\b(?:без|не|никак\w*|только)\b', request, re.I):
+        # Ambiguous negative restrictions keep the conservative semantic route;
+        # only a plain positive save command can clear an invented ban.
+        return route
+    explicit_ban = bool(re.search(
+        r'(?:без\s+(?:интернет|веб|сети)|не\s+(?:используй|использовать|ищи|искать|обращайся|заходи|выходи|ходи|открывай)'
+        r'.{0,50}(?:интернет|веб|сеть|сети|ссыл|страниц)|только\s+(?:(?:по|на)\s+)?(?:сохран[её]нн|имеющ|локальн)|не\s+ищи\s+(?:заново|снова)|без\s+(?:нов\w*\s+)?поиск\w*)', request, re.I))
+    if explicit_ban:
+        return route.model_copy(update={
+            'retrieval': route.retrieval if route.retrieval in {'none', 'chat_sources'} else 'chat_sources',
+            'intents': route.intents.model_copy(update={'wants_no_web': True}),
+        })
+    return route.model_copy(update={
+        'retrieval': 'deep_web', 'task_type': 'write_from_source', 'safeguarded': True,
+        'intents': route.intents.model_copy(update={
+            'wants_source_saved_for_chat': True, 'wants_no_web': False,
+        }),
+    })
+
+
+def save_followup_request(request: str, history: list[Message]) -> str:
+    """Resolve a short save command from user requests, never assistant claims."""
+    for item in reversed(history):
+        if item.role != 'user' or item.content == request or SAVE_SOURCE_REQUEST.search(item.content):
+            continue
+        if ROUTER_SOURCE_OBJECT.search(item.content) or self_contained_source_query(item.content):
+            return item.content[:6000] + '\nТекущее действие: ' + request
+        break  # Do not resurrect a source task after an unrelated topic change.
+    return request
+
+
 def apply_router_safeguards(
     route: RetrievalRoute,
     original_request: str,
@@ -1327,6 +1376,8 @@ def deterministic_route_fallback(
     )
 
 
+@search_trace.purpose("retrieval_router")
+@resource_operation("planner")
 async def choose_retrieval_route(
     model_id: str,
     original_request: str,
@@ -1475,7 +1526,7 @@ async def choose_retrieval_route(
                 else router_reply_status(raw)
             )
             if attempt == 0:
-                logger.warning("Router reply was not usable; retrying once; raw=%r", raw[:200])
+                logger.warning("Router reply was not usable; retrying once; chars=%s status=%s", len(raw), router_reply_status(raw))
         if diagnostic is not None:
             diagnostic({
                 "phase": "finish",
@@ -1498,7 +1549,7 @@ async def choose_retrieval_route(
         # from explicit signals so a dead router cannot demote an obvious
         # comparison or source lookup. A silent fallback previously hid every
         # router decision in production.
-        logger.warning("Router fell back to a deterministic route; raw reply=%r", raw[:500])
+        logger.warning("Router fell back to a deterministic route; chars=%s status=%s", len(raw), router_reply_status(raw))
         router_source = "fallback"
         route = deterministic_route_fallback(
             original_request, has_chat_material=bool(chat_source_titles)
@@ -1574,6 +1625,7 @@ async def collect_model_answer(
         return "".join(chunks).strip(), True
 
 
+@search_trace.purpose("research_review")
 async def review_research_answer(
     model_id: str,
     messages: list[dict[str, str]],
@@ -1616,6 +1668,7 @@ async def review_research_answer(
         return ResearchReview(verdict="accept"), False
 
 
+@search_trace.purpose("research_revision")
 async def revise_research_answer(
     model_id: str,
     messages: list[dict[str, str]],
@@ -1665,6 +1718,8 @@ def _fallback_request_anchor(original_request: str) -> RequestAnchor:
     )
 
 
+@search_trace.purpose("request_anchor")
+@resource_operation("planner")
 async def build_request_anchor(model_id: str, original_request: str) -> RequestAnchor:
     """Extract a bounded request frame without allowing the model to invent user facts.
 
@@ -1767,6 +1822,8 @@ def is_simple_fresh_fact(route: RetrievalRoute, original_request: str) -> bool:
     return True
 
 
+@search_trace.purpose("search_query")
+@resource_operation("planner")
 async def choose_contextual_search_query(
     model_id: str, anchor: RequestAnchor, conversation: list[Message]
 ) -> str:
@@ -1794,6 +1851,8 @@ async def choose_contextual_search_query(
         return anchor.original_request
 
 
+@search_trace.purpose("search_planner")
+@resource_operation('planner')
 async def choose_web_action(
     model_id: str,
     anchor: RequestAnchor,
@@ -1805,12 +1864,12 @@ async def choose_web_action(
 ) -> WebAgentAction:
     """Update evidence and choose one bounded next step without exposing hidden reasoning."""
     catalog = "\n".join(
-        f"{result_id}. {item.title} | {item.snippet}"
+        f"{result_id}. {item.title} | URL: {item.url} | {item.snippet}"
         + (" | уже открыто" if result_id in opened_pages else "")
         for result_id, item in results_by_id.items()
     )
     opened = "\n\n".join(
-        f"{result_id}. {title}\nURL: {url}\nТекст: {page[:14000]}"
+        f"{result_id}. {title}\nURL: {url}\nТекст: {page[:settings.web_model_fragment_chars]}"
         for result_id, (title, url, page) in opened_pages.items()
     ) or "Нет"
     prior = previous.model_dump_json(exclude={"action", "query", "result_id", "purpose"}) if previous else "Нет"
@@ -1841,7 +1900,14 @@ async def choose_web_action(
         "find: {\"action\":\"find\",\"result_id\":\"r1\",\"query\":\"слова для поиска по всему документу\"}. "
         "read: {\"action\":\"read\",\"result_id\":\"r1\",\"start_block\":0,\"end_block\":1}. "
         "find/read разрешены только для открытых документов; purpose для них null. "
-        "Номера block бери из текста; старые ссылки являются кандидатами, а не доказательством."
+        "Номера block бери из текста; старые ссылки являются кандидатами, а не доказательством. "
+        "Единственный актуальный формат JSON: action, query, result_id, start_block, end_block, purpose, "
+        "confirmed (массив строк), missing (массив {field: латинский идентификатор, status: unknown}). "
+        "Не добавляй другие поля. open: query/purpose/start_block/end_block null. "
+        "search: result_id/start_block/end_block null, purpose find_primary_source/verify_fact/clarify_entity/fill_missing_fact/cross_check. "
+        "answer: все аргументы null. Например {\"action\":\"open\",\"result_id\":\"r1\",\"confirmed\":[],\"missing\":[]}. "
+        "Если запрос кроме поиска и проверки глав требует эпизоды/цитаты/анализ, сначала find/read нужные "
+        "фрагменты оригинала. Комментарий с главами не заменяет оригинал."
     )
     if conversation:
         user_context = "\n".join(item.content[:800] for item in conversation if item.role == "user")[-8000:]
@@ -1849,15 +1915,16 @@ async def choose_web_action(
             "\nПредыдущие запросы пользователя (данные для разрешения отсылок, последнее уточнение важнее):\n"
             + user_context
         )
-    chunks = [chunk async for chunk in providers.stream_answer(model_id, [{"role": "system", "content": prompt}])]
+    chunks = [chunk async for chunk in providers.stream_answer(model_id, [{"role": "system", "content": prompt}],
+        **({"thinking": False, "reuse_connection": True} if resolve_model_id(model_id).startswith("deepseek:") else {}))]
     try:
-        action = WebAgentAction.model_validate_json("".join(chunks).strip())
-    except (ValidationError, ValueError):
-        return WebAgentAction(action="answer")
+        action = WebAgentAction.model_validate_json(extract_json_object("".join(chunks)))
+    except (ValidationError, ValueError) as exc:
+        raise PlannerFailure("Планировщик вернул невалидный JSON; поиск не завершён.") from exc
     if action.action == "open" and (
         action.result_id not in results_by_id or action.result_id in opened_pages
     ):
-        return WebAgentAction(action="answer")
+        raise PlannerFailure("Планировщик выбрал неизвестный или уже открытый источник.")
     if action.action in {"search", "find"}:
         action.query = action.query.strip()[:300]
     return action
@@ -1904,7 +1971,7 @@ def deep_web_open_requirement(
     available = [result_id for result_id in results_by_id if result_id not in opened_ids]
     if not available:
         return None
-    ranked = primary_source_results(results_by_id, opened_ids)
+    ranked = primary_source_results(results_by_id, opened_ids, original_request)
     return ranked[0][0] if ranked else available[0]
 
 
@@ -2007,10 +2074,11 @@ def exact_source_open_requirement(
     available = [result_id for result_id in results_by_id if result_id not in opened_ids]
     if not available:
         return None
-    ranked = primary_source_results(results_by_id, opened_ids)
+    ranked = primary_source_results(results_by_id, opened_ids, original_request)
     return ranked[0][0] if ranked else available[0]
 
 
+@search_trace.traced_answer
 async def process_answer(job_id: str) -> None:
     started = time.perf_counter()
     async with SessionFactory() as session:
@@ -2027,6 +2095,9 @@ async def process_answer(job_id: str) -> None:
             raise RuntimeError("Job references missing chat messages")
         # Instrumentation only: read-only marks, never used for control flow.
         request_received_ms = _epoch_ms(job.created_at)
+        diagnostic = search_trace.current()
+        if diagnostic is not None:
+            diagnostic.received_ms = request_received_ms
         queue_ms = (
             max(0, round(time.time() * 1000) - request_received_ms)
             if request_received_ms is not None
@@ -2237,6 +2308,7 @@ async def process_answer(job_id: str) -> None:
             and not ROUTER_FIND_VERB.search(user_message.content)
             and not route.intents.rejects_previous_material
         )
+        route = safeguard_save_followup(route, user_message.content, has_links=bool(prior_results))
         if (route.intents.wants_source_saved_for_chat and prior_results
                 and not route.intents.wants_no_web and route.retrieval != "deep_web"):
             route = route.model_copy(update={
@@ -2316,6 +2388,7 @@ async def process_answer(job_id: str) -> None:
         # Explicit Working Source instructions come from the request's meaning,
         # not from a phrase list.
         wants_source_saved = route.intents.wants_source_saved_for_chat
+        source_request = save_followup_request(user_message.content, history) if save_known_links else user_message.content
         web_search_requested, web_research_requested = route_uses_web(route)
         from .feature_capabilities import enabled
         if not enabled(settings, 'web_search'):
@@ -2336,10 +2409,10 @@ async def process_answer(job_id: str) -> None:
                 await emit(job_id, "state", {"state": "framing_request"})
                 try:
                     async with asyncio.timeout(min(5.0, settings.web_agent_max_seconds)):
-                        request_anchor = await build_request_anchor(model_id, user_message.content)
+                        request_anchor = await build_request_anchor(model_id, source_request)
                     anchor_mode = "model"
                 except TimeoutError:
-                    request_anchor = _fallback_request_anchor(user_message.content)
+                    request_anchor = _fallback_request_anchor(source_request)
                     anchor_mode = "fallback"
             context_meta["request_anchor"] = request_anchor_summary(request_anchor, anchor_mode)
         working_source_requested = wants_source_saved or route.intents.wants_primary_source
@@ -2370,12 +2443,13 @@ async def process_answer(job_id: str) -> None:
             fresh_search = not save_known_links and needs_fresh_search(
                 route, user_message.content, material_rejected=rejected_now,
             )
-            initial_query = user_message.content
+            initial_query = source_request
             query_timed_out = False
-            if (web_research_requested and not prior_results) or (
+            explicit_query = len(history) <= 1 and self_contained_source_query(user_message.content)
+            if not explicit_query and ((web_research_requested and not prior_results) or (
                 (route.retrieval == "web" or (wants_source_saved and fresh_search)) and len(history) > 1
                 and len(user_message.content) <= 120 and len(user_message.content.split()) <= 8
-            ):
+            )):
                 await emit(job_id, "state", {"state": "search_query"})
                 try:
                     async with asyncio.timeout(min(5.0, settings.web_agent_max_seconds)):
@@ -2399,12 +2473,11 @@ async def process_answer(job_id: str) -> None:
                                      result_count=len(result))
                 return result
 
-            async def agent_open(item):
-                cached = await session.scalar(select(RawWebSource).where(
-                    RawWebSource.chat_id == chat.id, RawWebSource.url == item.url,
-                ))
-                if cached is not None and not route.freshness_required:
-                    return item.url, cached.content
+            downloaded_urls = set()
+
+            async def agent_fetch(item, cached_text):
+                if cached_text is not None:
+                    return item.url, cached_text
                 call_started = time.perf_counter()
                 latency_trace.record(latency_trace.OPEN_STARTED, trace_id=trace_id,
                                      message_id=assistant.id, job_id=job_id, since_send=since_send)
@@ -2418,20 +2491,57 @@ async def process_answer(job_id: str) -> None:
                                      message_id=assistant.id, job_id=job_id, since_send=since_send,
                                      duration_ms=round((time.perf_counter() - call_started) * 1000),
                                      page_chars=len(page))
+                downloaded_urls.add(url)
                 return url, page
+
+            async def agent_open(item):
+                cached = await session.scalar(select(RawWebSource).where(
+                    RawWebSource.chat_id == chat.id, RawWebSource.url == item.url,
+                ))
+                cached_text = reusable_document(
+                    cached, fresh=route.freshness_required,
+                    max_html_chars=settings.web_html_max_document_chars,
+                )
+                return await agent_fetch(item, cached_text)
+
+            async def agent_open_many(items, *, completed=None):
+                # AsyncSession is never shared by concurrent tasks. Cache lookups
+                # finish sequentially before any network-only task starts.
+                prepared = []
+                for item in items[:2]:
+                    cached = await session.scalar(select(RawWebSource).where(
+                        RawWebSource.chat_id == chat.id, RawWebSource.url == item.url))
+                    prepared.append((item, reusable_document(cached, fresh=route.freshness_required,
+                        max_html_chars=settings.web_html_max_document_chars)))
+                async def fetch(index, item, cached):
+                    try:
+                        result = await agent_fetch(item, cached)
+                    except Exception as exc:
+                        result = exc
+                    if completed is not None:
+                        completed[index] = result
+                    return result
+                tasks = [asyncio.create_task(fetch(index, item, cached)) for index, (item, cached) in enumerate(prepared)]
+                try:
+                    return await asyncio.gather(*tasks, return_exceptions=True)
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
 
             async def agent_plan(query, results, opened, previous):
                 try:
                     return await choose_web_action(model_id, request_anchor, query, results, opened, previous,
                                                    conversation=history)
-                except ProviderError:
-                    return WebAgentAction(action="answer")
+                except ProviderError as exc:
+                    raise PlannerFailure("Модель планировщика временно недоступна; поиск не завершён.") from exc
 
             async def agent_save(item, page, focus_query=None):
                 if not working_source_requested:
                     return None
                 return await create_source_candidate(
-                    session, job_id, chat, user_message.content, history, model_id,
+                    session, job_id, chat, source_request, history, model_id,
                     item.title, item.url, page, explicitly_requested=working_source_requested,
                     system_prompt=source_candidate_prompt,
                     excerpt_only=route.intents.wants_source_excerpt,
@@ -2442,6 +2552,8 @@ async def process_answer(job_id: str) -> None:
                 await emit(job_id, "state", data)
 
             reused_results = [] if wants_source_saved and fresh_search else prior_results
+            if diagnostic is not None:
+                diagnostic.route = "deep_web" if web_research_requested else "web"
             outcome = await run_search_agent(
                 query=initial_query,
                 previous=reused_results,
@@ -2452,24 +2564,34 @@ async def process_answer(job_id: str) -> None:
                 max_opens=settings.web_agent_max_opened_pages,
                 open_floor_seconds=settings.web_open_extract_seconds,
                 save_floor_seconds=settings.web_source_save_seconds,
+                model_fragment_chars=settings.web_model_fragment_chars,
+                optimise=True, verification_query=source_request,
+                require_saved_source=working_source_requested,
+                additional_task_query=user_message.content,
+                min_sources=2 if (route.task_type == "comparison" or route.intents.wants_multi_source_check
+                                  or comparison_requested(user_message.content)) else 1,
                 search=agent_search, open_page=agent_open, plan=agent_plan,
+                open_pages=agent_open_many if settings.web_comparison_parallel_read else None,
                 save=agent_save, state=agent_state,
                 required_open=lambda results, attempted, opened: (
                     deep_web_open_requirement(route, user_message.content, results, attempted, opened)
                     or exact_source_open_requirement(route, user_message.content, results, attempted, opened)
                 ),
             )
+            if diagnostic is not None:
+                diagnostic.completion = outcome.completion
+                diagnostic.stop_reason = outcome.stop_reason
+                diagnostic.searches = outcome.searches
+                diagnostic.successful_opens = len(outcome.opened)
+                diagnostic.verified_sources = len(outcome.opened) if outcome.completion == "success" else sum(bool(check.get("verified")) for check in outcome.checks.values())
+            search_trace.event("FINISHED", completion=outcome.completion, stop_reason=outcome.stop_reason,
+                               searches=outcome.searches, opens=diagnostic.opens if diagnostic else len(outcome.opened))
             opened_this_turn = bool(outcome.opened)
             # Persist completed reads after cancellable work, so cancellation
             # cannot interrupt the cache transaction. Candidates are not promoted
             # to Working Sources until their relevance is confirmed.
             for title, url, page in outcome.opened.values():
-                cached = await session.scalar(select(RawWebSource.id).where(
-                    RawWebSource.chat_id == chat.id, RawWebSource.url == url,
-                ))
-                if cached is None:
-                    session.add(RawWebSource(chat_id=chat.id, url=url, title=title[:240],
-                                             content=page, content_hash=hashlib.sha256(page.encode()).hexdigest()))
+                await cache_document(session, chat.id, title, url, page, refreshed=url in downloaded_urls)
             await session.commit()
             web_results = list(outcome.results.values())
             working_source = outcome.source
@@ -2480,6 +2602,11 @@ async def process_answer(job_id: str) -> None:
                 "searches": outcome.searches, "queries": outcome.queries,
                 "opened_pages": len(outcome.opened), "page_errors": outcome.errors,
                 "timed_out": outcome.timed_out, "query_fallback": query_timed_out,
+                "explicit_query": explicit_query,
+                "completion": outcome.completion, "stop_reason": outcome.stop_reason,
+                "planner_calls": outcome.planner_calls, "planner_ms": outcome.planner_ms,
+                "deterministic_steps": outcome.deterministic_steps,
+                "warnings": outcome.warnings, "checks": outcome.checks, "ranking": outcome.ranking,
                 "reused_references": len(reused_results) if web_research_requested else 0,
                 "fresh_search": fresh_search,
                 "saved": working_source is not None,
@@ -2498,8 +2625,24 @@ async def process_answer(job_id: str) -> None:
             context_meta["web_search"] = web_meta
             if web_results:
                 system_parts.append(web_search_prompt(web_results))
+                evidence_catalog = [{'citation': index, 'title': item.title, 'url': item.url,
+                    'read': any(url == item.url for _, url, _ in outcome.opened.values()),
+                    'check': next((outcome.checks.get(key, {}) for key, result in outcome.results.items() if result.url == item.url), {})}
+                    for index, item in enumerate(web_results, 1)]
+                system_parts.append('Границы доказательств: ' + json.dumps(evidence_catalog, ensure_ascii=False)
+                    + '\nНе называй непрочитанную ссылку проверенным оригиналом. Не цитируй из неё текст. '
+                    'Совпадение заголовков глав — только проверка структуры. Отклонённый комментарий/пересказ '
+                    'не подтверждает оригинал. Эпизоды, цитаты и анализ по тексту допустимы только по '
+                    'прочитанным фрагментам; если их не хватает, сообщи об этом без заполнения по памяти.')
             for title, url, page in outcome.inspected.values():
                 system_parts.append(web_page_prompt(url, page))
+            system_parts.append(
+                "Состояние веб-исследования: " + outcome.completion + "; причина: " + outcome.stop_reason
+                + ". Техническая ошибка, пустая/частичная выдача и исчерпание лимита НЕ доказывают отсутствие информации. "
+                "Сообщай, что осталось непроверенным. Проверка заголовков и наличия текста глав не доказывает "
+                "подлинность оригинала или отсутствие сокращений внутри глав. Диагностика: "
+                + json.dumps({"checks": outcome.checks, "warnings": outcome.warnings}, ensure_ascii=False)[:5000]
+            )
             if outcome.timed_out:
                 system_parts.append("Поиск завершён по лимиту времени. Используй только полученные данные; "
                                     "не называй незавершённую проверку отсутствием источников.")
@@ -2514,7 +2657,7 @@ async def process_answer(job_id: str) -> None:
                 )
             if not web_results:
                 web_search_note = ("\n\n_Поиск источников временно недоступен._" if outcome.errors
-                                   else "\n\n_Поиск не нашёл подходящих источников._")
+                                   else "\n\n_В полученной выдаче нет подходящих ссылок; поиск не подтверждает отсутствие информации._")
         # A saved document can be far larger than the retrieval budget. When the
         # task needs the document's own text and this turn produced no fresh
         # reading, the stored full text is searched directly and one bounded
@@ -2645,7 +2788,7 @@ async def process_answer(job_id: str) -> None:
                     reason = "Прочитанный материал не удалось подтвердить и выделить как нужный полный текст."
                 answer = (
                     f"Запрошенный текст в этом запросе не сохранён. {reason} "
-                    "Ранее сохранённые источники остаются в чате."
+                    + ("Ранее сохранённые источники остаются в чате." if available_sources else "В этом чате пока нет сохранённых рабочих источников.")
                 )
             else:
                 assert working_source is not None
@@ -3054,6 +3197,7 @@ async def process_chat_memory(job_id: str) -> None:
         await session.commit()
 
 
+@resource_operation('index')
 async def process_ingest(job_id: str) -> None:
     async with SessionFactory() as session:
         job = await session.get(Job, job_id)
@@ -3122,7 +3266,7 @@ async def fail_job(job_id: str, error: Exception) -> None:
         job = await session.get(Job, job_id)
         if job is None or job.status == "cancelled":
             return
-        if job.kind == "INGEST" and _is_transient_embedding_failure(error):
+        if job.kind == "INGEST" and (isinstance(error, ResourceUnavailable) or _is_transient_embedding_failure(error)):
             retries = int(job.payload.get("retry_count", 0))
             if retries < INGEST_RETRY_LIMIT:
                 delay = min(INGEST_RETRY_BASE_SECONDS * (2**retries), 15 * 60)
@@ -3148,7 +3292,7 @@ async def fail_job(job_id: str, error: Exception) -> None:
                     )
                 await session.commit()
                 logger.warning(
-                    "Will retry ingest job %s after transient embeddings failure in %s seconds",
+                    "Will retry ingest job %s after a transient resource/provider failure in %s seconds",
                     job_id,
                     delay,
                 )
@@ -3203,7 +3347,9 @@ async def fail_job(job_id: str, error: Exception) -> None:
 
 async def _watch_answer_cancellation(job_id: str, task: asyncio.Task[None]) -> None:
     while not task.done():
-        await asyncio.sleep(0.25)
+        done, _ = await asyncio.wait({task}, timeout=0.25)
+        if done:
+            return
         async with SessionFactory() as session:
             status = await session.scalar(select(Job.status).where(Job.id == job_id))
         if status == "cancelled":
@@ -3239,7 +3385,8 @@ async def process_next_job() -> bool:
                 if status != "cancelled":
                     raise
             finally:
-                watcher.cancel()
+                # Do not cancel a watcher in the middle of a DB rollback/close.
+                # It wakes immediately when the answer task ends.
                 await asyncio.gather(watcher, return_exceptions=True)
         elif kind == "INGEST":
             await process_ingest(job_id)
@@ -3268,6 +3415,7 @@ async def run_worker() -> None:
                 await asyncio.sleep(settings.worker_poll_seconds)
     finally:
         await latency_trace.stop_telegram_worker()
+        resources().close()
         await providers.aclose()
         await close_database()
 

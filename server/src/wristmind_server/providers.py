@@ -19,6 +19,8 @@ import httpx
 from pypdf import PdfReader
 from curl_cffi.requests import AsyncSession, RequestsError
 
+from . import search_trace
+from .resource_controller import resources, resource_operation
 from .config import Settings, resolve_model_id
 
 
@@ -76,6 +78,7 @@ def provider_attempt_diagnostics(info: dict[str, object]) -> Iterator[dict[str, 
 
 def _note_provider_attempt(attempt: int) -> None:
     """Record attempt progress. Never raises and never mutates the stream."""
+    search_trace.network_attempt(attempt)
     info = _provider_attempt_info.get()
     if info is None:
         return
@@ -137,6 +140,7 @@ class ProviderRouter:
             await self._router_deepseek_client.aclose()
             self._router_deepseek_client = None
 
+    @search_trace.observed_stream
     async def stream_answer(
         self,
         model_id: str,
@@ -328,6 +332,7 @@ class ProviderRouter:
                             continue
                         try:
                             body = json.loads(data)
+                            search_trace.usage(body.get("usage") if isinstance(body, dict) else None)
                             chunk = body["choices"][0]["delta"].get("content")
                         except (KeyError, IndexError, TypeError, json.JSONDecodeError):
                             continue
@@ -380,6 +385,7 @@ class ProviderRouter:
                             continue
                         try:
                             body = json.loads(data)
+                            search_trace.usage(body.get("usage") if isinstance(body, dict) else None)
                             chunk = body["choices"][0]["delta"].get("content")
                         except (KeyError, IndexError, TypeError, json.JSONDecodeError):
                             continue
@@ -425,16 +431,18 @@ class ProviderRouter:
         data = sorted(response.json()["data"], key=lambda item: item["index"])
         return [item["embedding"] for item in data]
 
+    @search_trace.observed_call("vision_ocr")
+    @resource_operation('ocr')
     async def analyze_file(self, path: Path, media_type: str) -> str:
         from .model_capabilities import selected, image_text
         choice = selected(self.settings, 'vision')
         if choice:
             is_pdf = media_type == 'application/pdf' or path.suffix.lower() == '.pdf'
-            pages = await asyncio.to_thread(lambda: len(PdfReader(str(path)).pages)) if is_pdf else 1
+            pages = await resources().thread('pdf', lambda: len(PdfReader(str(path)).pages)) if is_pdf else 1
             if not 1 <= pages <= self.settings.max_pdf_pages: raise ProviderError('Превышен предел страниц PDF')
             answers = []
             for page in range(1, pages + 1):
-                data = await asyncio.to_thread(self._vision_pdf_page, path, page) if is_pdf else await asyncio.to_thread(path.read_bytes)
+                data = await resources().thread('pdf', self._vision_pdf_page, path, page) if is_pdf else await resources().thread('pdf', path.read_bytes)
                 text = 'Тестовый источник' if self.settings.mock_providers else await image_text(*choice, data, 'image/png' if is_pdf else media_type)
                 answers.append(f'## Страница {page}\n\n{text}' if is_pdf else text)
             return '\n\n'.join(answers)
@@ -442,14 +450,14 @@ class ProviderRouter:
         if self.settings.mock_providers or not self.settings.deepseek_api_key:
             raise ProviderError("Vision provider is not configured")
         is_pdf = media_type == "application/pdf" or path.suffix.lower() == ".pdf"
-        pages = await asyncio.to_thread(lambda: len(PdfReader(str(path)).pages)) if is_pdf else 1
+        pages = await resources().thread('pdf', lambda: len(PdfReader(str(path)).pages)) if is_pdf else 1
         if pages < 1 or pages > self.settings.max_pdf_pages:
             raise ProviderError("PDF exceeds the supported page limit")
         answers = []
         # One session for all pages; PDFs are rendered locally, never sent as unsupported file blocks.
         async with httpx.AsyncClient(timeout=180) as client:
             for page in range(1, pages + 1):
-                data = await asyncio.to_thread(self._vision_pdf_page, path, page) if is_pdf else await asyncio.to_thread(path.read_bytes)
+                data = await resources().thread('pdf', self._vision_pdf_page, path, page) if is_pdf else await resources().thread('pdf', path.read_bytes)
                 image_type = "image/png" if is_pdf else media_type
                 encoded = base64.b64encode(data).decode("ascii")
                 payload = {
@@ -476,6 +484,7 @@ class ProviderRouter:
                     raise ProviderError("Не удалось подключиться к DeepSeek Vision") from exc
                 if response.status_code >= 400:
                     raise ProviderError(f"DeepSeek Vision HTTP {response.status_code}")
+                search_trace.usage(response.json().get("usage"))
                 text = response.json()["choices"][0]["message"]["content"].strip()
                 if not text:
                     raise ProviderError("DeepSeek Vision вернул пустой результат")

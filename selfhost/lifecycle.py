@@ -175,6 +175,7 @@ def backup(target, paused=False):
                 'arch': info['Architecture'], 'schema': 1, 'postgres_major': 16, 'image': values['WRISTMIND_IMAGE'],
                 'image_id': info['Id'], 'project': data['project'], 'running': names}
             checksum = release.pack(staging, manifest, output)
+            access.atomic(output.with_name(output.name + ".sha256"), checksum + "  " + output.name + "\n")
         completed = True
     finally:
         if not paused or not completed:
@@ -402,6 +403,72 @@ def restore(target, package, checksum, confirmation, safety=True):
         print('Состояние из резервной копии восстановлено. Более новые данные заменены.')
 
 
+def choose_backup(target):
+    directory = target / 'backups'
+    if directory.is_symlink():
+        raise ValueError('Каталог резервных копий не должен быть ссылкой.')
+    copies = sorted((p for p in directory.glob('*.tar.gz') if not p.is_symlink() and p.is_file()),
+                    key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True)
+    if not copies:
+        print('Резервных копий пока нет. Создайте бэкап в пункте 3.')
+        return None
+    print('\nВосстановление из резервной копии')
+    for number, path in enumerate(copies, 1):
+        date = time.strftime('%d.%m.%Y %H:%M', time.localtime(path.stat().st_mtime))
+        name = ''.join(c if c.isprintable() else '?' for c in path.name)
+        print(f'{number}) {date} · {path.stat().st_size / 1024**2:.1f} МБ · {name}')
+    print('0) Назад')
+    while True:
+        try:
+            value = input('Выберите бэкап: ').strip()
+        except EOFError:
+            return None
+        if value == '0':
+            return None
+        if value.isascii() and value.isdigit() and len(value) <= 6 and 1 <= int(value) <= len(copies):
+            package = copies[int(value) - 1]
+            break
+        print('Введите номер из списка или 0 для возврата.')
+    if package.is_symlink():
+        raise ValueError('Бэкап не должен быть ссылкой.')
+    with installer.wait_status('Проверяю выбранную резервную копию'):
+        # Read only the small metadata; do not extract database/private files.
+        with tarfile.open(package, 'r|*') as archive:
+            info = None
+            for count, member in enumerate(archive):
+                if count > len(release.RUNTIME) + len(release.PRIVATE) + 4:
+                    raise ValueError('Некорректный состав бэкапа.')
+                if member.name == 'manifest.json':
+                    if not member.isfile() or member.size > 65536:
+                        raise ValueError('Некорректный манифест бэкапа.')
+                    info = release.metadata(json.load(archive.extractfile(member)))
+                    break
+        if not info or info['kind'] != 'backup':
+            raise ValueError('Выбранный архив не является резервной копией.')
+        saved = installer.manifest_at(target)
+        if saved and saved['project'] != info['project']:
+            raise ValueError('Это резервная копия другого проекта.')
+        checksum = release.digest(package)
+        sidecar = package.with_name(package.name + '.sha256')
+        if sidecar.is_symlink():
+            raise ValueError('Файл контрольной суммы не должен быть ссылкой.')
+        if sidecar.exists():
+            with sidecar.open() as stream:
+                expected = stream.read(256).split()
+            if expected != [checksum, package.name]:
+                raise ValueError('Контрольная сумма бэкапа не совпадает. Восстановление отменено.')
+    print(f"Выбрана копия: {package.name}\nВерсия: {info['version']} · проект: {info['project']}")
+    print('Восстановление заменит текущие данные выбранной копией. Перед этим будет создан бэкап нынешнего состояния.')
+    try:
+        answer = input('Восстановить? Введите «да» для подтверждения: ').strip().lower()
+    except EOFError:
+        answer = ''
+    if answer != 'да':
+        print('Восстановление отменено.')
+        return None
+    return package, checksum, info['project']
+
+
 def rollback(target, confirmation):
     record = read_journal(target)
     if record.get('phase') == 'backing-up':
@@ -467,7 +534,7 @@ def install_release(target, package, checksum, port, demo, resume=False):
 
 def main():
     parser = argparse.ArgumentParser(description='Терминальное обслуживание WristMind')
-    parser.add_argument('command', choices=['backup', 'update', 'restore', 'rollback', 'remove', 'install-release', 'version'])
+    parser.add_argument('command', choices=['backup', 'update', 'restore-menu', 'restore', 'rollback', 'remove', 'install-release', 'version'])
     parser.add_argument('--install-dir', type=Path, required=True)
     parser.add_argument('--package', type=Path)
     parser.add_argument('--url')
@@ -499,6 +566,12 @@ def main():
         target.parent.mkdir(parents=True, exist_ok=True)
     try:
         with access.locked(target), tempfile.TemporaryDirectory(prefix='wristmind-download-') as downloaded:
+            if args.command == 'restore-menu':
+                selected = choose_backup(target)
+                if selected is None:
+                    return 0
+                args.package, args.sha256, args.confirm_project = selected
+                args.command = 'restore'
             if args.latest:
                 data, _ = state(target, False)
                 current = data.get('release', {}).get('version', '0.0.0')

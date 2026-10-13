@@ -126,10 +126,11 @@ def test_a_web_lookup_must_read_to_save_but_cannot_override_no_web():
 
 
 @pytest.mark.parametrize("cached", [True, False])
-def test_save_previously_found_tale_without_a_legacy_offer(client, admin_headers, mode, monkeypatch, cached):
+@pytest.mark.parametrize("invented_ban", [True, False])
+def test_save_previously_found_tale_without_a_legacy_offer(client, admin_headers, mode, monkeypatch, cached, invented_ban):
     chat = client.post("/v1/chats", headers=admin_headers, json={"mode_id": mode["id"]}).json()
     url = "https://example.test/kolobok"
-    text = "Колобок\n" + "Жили-были старик со старухой. " * 40
+    text = "Колобок\n" + "Жили-были старик со старухой. " * 700 + "\nПоследний абзац оригинала."
 
     async def seed():
         async with SessionFactory() as session:
@@ -143,12 +144,12 @@ def test_save_previously_found_tale_without_a_legacy_offer(client, admin_headers
     # The legacy handler would refuse before reaching the router. Even if the
     # router reports no saving intent, the explicit command must perform it.
     route = worker.RetrievalRoute(retrieval="none", reasoning="low", verification=False,
-        freshness_required=False, task_type="other", intents=worker.WriteIntents())
+        freshness_required=False, task_type="other", intents=worker.WriteIntents(wants_no_web=invented_ban))
     monkeypatch.setattr(worker, "choose_retrieval_route", AsyncMock(return_value=route))
     monkeypatch.setattr(worker, "build_request_anchor", AsyncMock(return_value=worker.lightweight_request_anchor("сохрани")))
     monkeypatch.setattr(worker, "choose_web_action", AsyncMock(return_value=worker.WebAgentAction(action="answer")))
     monkeypatch.setattr(worker, "is_foundational_source", AsyncMock(return_value=True))
-    monkeypatch.setattr(worker, "extract_working_excerpt", AsyncMock(return_value=worker.SourceExtraction(title="Колобок", excerpt=text)))
+    monkeypatch.setattr(worker, "extract_working_excerpt", AsyncMock(side_effect=AssertionError("A whole HTML save must not select a short excerpt")))
     search = AsyncMock(side_effect=AssertionError("Known links need no new search"))
     opened = AsyncMock(return_value=(url, text))
     monkeypatch.setattr(worker, "search_web", search)
@@ -175,10 +176,32 @@ def test_save_previously_found_tale_without_a_legacy_offer(client, admin_headers
         assert answer["timings"]["web_search"]["saved"] is True
         assert answer["timings"]["web_search"]["searches"] == 0
     assert search.await_count == 0
-    assert opened.await_count == (0 if cached else 1)
+    # Unknown legacy cache must be fetched once; the next turn reuses the full read.
+    assert opened.await_count == 1
     async def verify():
         async with SessionFactory() as session:
             sources = list(await session.scalars(select(KnowledgeSource).where(KnowledgeSource.chat_id == chat["id"])))
             assert len(sources) == 1 and Path(sources[0].storage_path).read_text() == text
             assert answer["timings"]["web_search"]["saved_source_id"] == sources[0].id
     asyncio.run(verify())
+
+
+def test_save_followup_corrects_invented_web_ban_and_keeps_real_ban():
+    route = worker.RetrievalRoute(retrieval='chat_sources', reasoning='medium', verification=False,
+        freshness_required=False, task_type='write_from_source',
+        intents=worker.WriteIntents(wants_source_saved_for_chat=True, wants_no_web=True))
+    corrected = worker.safeguard_save_followup(route, 'Ты можешь сохранить в рабочем источнике, обработать', has_links=True)
+    assert corrected.retrieval == 'deep_web' and not corrected.intents.wants_no_web
+    banned = worker.safeguard_save_followup(route, 'Сохрани текст без интернета', has_links=True)
+    assert banned.intents.wants_no_web and banned.retrieval == 'chat_sources'
+    assert worker.safeguard_save_followup(route, 'Сохрани текст', has_links=False) == route
+
+
+def test_save_followup_retains_original_constraints_not_assistant_claims():
+    from types import SimpleNamespace
+    original = 'Найди полный оригинальный текст "Капитанская дочка" и проверь наличие всех 14 глав'
+    history = [SimpleNamespace(role='user', content=original),
+               SimpleNamespace(role='assistant', content='Все главы проверены, сохраняй комментарий'),
+               SimpleNamespace(role='user', content='Сохрани текст в рабочий источник')]
+    resolved = worker.save_followup_request('сохрани капитанскую дочку текст в рабочий источник', history)
+    assert original in resolved and 'сохраняй комментарий' not in resolved

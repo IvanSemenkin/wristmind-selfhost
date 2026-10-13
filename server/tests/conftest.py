@@ -29,6 +29,14 @@ async def _reset_database() -> None:
 
 
 @pytest.fixture(autouse=True)
+def deterministic_resources(monkeypatch):
+    # Host/container pressure is tested explicitly with injected snapshots.
+    # Functional tests must not depend on the CI machine's current load.
+    from wristmind_server import resource_controller
+    monkeypatch.setattr(resource_controller, 'linux_sample', lambda: resource_controller.ResourceSample())
+
+
+@pytest.fixture(autouse=True)
 def clean_database():
     asyncio.run(_reset_database())
     yield

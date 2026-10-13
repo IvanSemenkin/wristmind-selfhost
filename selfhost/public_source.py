@@ -19,10 +19,12 @@ TREES = ('selfhost', 'server/src', 'server/tests', 'web/src', 'web/public',
 EXTRA = ('server/pyproject.toml', 'web/package.json', 'web/package-lock.json',
          'web/tsconfig.json', 'web/vite.config.ts', 'web/vinext.config.ts',
          'web/index.html', 'web/tsconfig.app.json', 'web/tsconfig.node.json', 'android/build.gradle.kts', 'android/settings.gradle.kts',
-         'android/gradle.properties', 'android/gradlew', 'android/gradlew.bat')
+         'android/gradle.properties', 'android/gradlew', 'android/gradlew.bat',
+         'docs/ADAPTIVE_WEB_SEARCH_BENCHMARK.json')
 DOCS = ('SELF_HOSTING_INSTALL', 'SELF_HOSTING_ACCESS', 'SELF_HOSTING_RELEASES',
         'SELF_HOSTING_RUNTIME', 'SELF_HOSTING_CAPABILITIES', 'LOCAL_MODELS',
-        'COMPANION_SETUP', 'PUBLIC_RELEASE_CHECKLIST', 'PROMPT_PARITY', 'ASSISTANT_SYSTEM_PROMPT')
+        'COMPANION_SETUP', 'PUBLIC_RELEASE_CHECKLIST', 'PROMPT_PARITY', 'ASSISTANT_SYSTEM_PROMPT', 'LONG_WEB_DOCUMENTS', 'DEEP_WEB_SEARCH',
+        'ADAPTIVE_WEB_SEARCH', 'SEARCH_PRIMARY_SOURCE_FIX', 'SEARCH_OBSERVABILITY')
 BLOCKED = ('build', 'node_modules', '__pycache__', '.pytest_cache', '.gradle',
            '.kotlin', 'data', 'data-v2', '.runtime', '.git', '.well-known')
 PATTERNS = ('.env*', '*.db', '*.sqlite*', '*.jks', '*.keystore', '*.pem', '*.key',

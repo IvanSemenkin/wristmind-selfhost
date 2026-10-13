@@ -1241,8 +1241,8 @@ async def list_chat_sources(
     # Select metadata only: full cached documents must not travel with the index.
     reads = (await session.execute(
         select(RawWebSource.id, RawWebSource.url, RawWebSource.title,
-               RawWebSource.retrieved_at, func.length(RawWebSource.content).label("character_count"))
-        .where(RawWebSource.chat_id == chat_id, func.length(func.trim(RawWebSource.content)) > 0)
+               RawWebSource.retrieved_at, func.length(func.coalesce(RawWebSource.full_content, RawWebSource.content)).label("character_count"))
+        .where(RawWebSource.chat_id == chat_id, func.length(func.trim(func.coalesce(RawWebSource.full_content, RawWebSource.content))) > 0)
         .order_by(RawWebSource.retrieved_at)
     )).all()
     read_by_url = {row.url: row for row in reads}

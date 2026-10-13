@@ -1,5 +1,6 @@
 """Provider presets, catalog discovery and text-stream adapters for added models."""
 import json
+from . import search_trace
 from urllib.parse import urlsplit
 
 import httpx
@@ -155,6 +156,9 @@ async def stream_connection(connection, model, messages, *, max_tokens=None, tim
                         continue
                     try:
                         event = json.loads(data)
+                        search_trace.usage(event.get("usage"))
+                        if isinstance(event.get("message"), dict):
+                            search_trace.usage(event["message"].get("usage"))
                         if event.get('type') == 'error' or event.get('error'):
                             raise ProviderError('Провайдер прервал ответ. Повторите запрос.')
                         if native:
