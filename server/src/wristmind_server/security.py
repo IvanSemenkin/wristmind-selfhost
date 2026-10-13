@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import ipaddress
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .config import Settings, get_settings
 from .database import get_session
 from .db_models import Device, SelfHostWebSession
+from .selfhost_sessions import SESSION_SECONDS, RENEW_BEFORE_SECONDS
 
 
 def hash_secret(value: str, settings: Settings) -> str:
@@ -74,6 +75,9 @@ async def current_device(
             expiration = web.expires_at.replace(tzinfo=timezone.utc) if web.expires_at.tzinfo is None else web.expires_at
             if expiration <= datetime.now(timezone.utc):
                 raise HTTPException(status_code=401, detail="Invalid device token")
+            if cookie_auth and (expiration - datetime.now(timezone.utc)).total_seconds() < RENEW_BEFORE_SECONDS:
+                web.expires_at = datetime.now(timezone.utc) + timedelta(seconds=SESSION_SECONDS)
+                request.state.renew_web_session = raw
         elif cookie_auth:
             raise HTTPException(status_code=401, detail="Invalid device token")
     if cookie_auth and request.method not in {"GET", "HEAD", "OPTIONS"} and request.headers.get("x-wristmind-csrf") != "1":

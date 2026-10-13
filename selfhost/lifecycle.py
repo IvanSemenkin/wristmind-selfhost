@@ -13,6 +13,7 @@ import tempfile
 import tarfile
 import time
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import access
 import installer
@@ -301,7 +302,7 @@ def ensure_idle(target):
         raise ValueError('Предыдущая операция не завершена. Используйте rollback или restore, прежде чем обновляться.')
 
 
-def update(target, package, checksum):
+def update(target, package, checksum, nightly=False):
     ensure_idle(target)
     old_data, _ = state(target)
     with tempfile.TemporaryDirectory(prefix='wristmind-update-') as temp:
@@ -327,6 +328,18 @@ def update(target, package, checksum):
             active.add('search')
         for name in sorted(active):
             run(['docker', 'image', 'pull', info['dependencies'][name]], target)
+        if nightly:
+            # Close admission before the final check; existing work is never intentionally stopped.
+            pause(target, old_data, True)
+            try:
+                is_idle = auto_idle(target)
+            except BaseException:
+                pause(target, old_data, False)
+                raise
+            if not is_idle:
+                pause(target, old_data, False)
+                print('Появились активные задания. Обновление отложено до следующей ночи.')
+                return
         recovery, recovery_hash = backup(target, paused=True)
         try:
             stage_files(target, staging, release.RUNTIME)
@@ -539,6 +552,7 @@ def main():
     parser.add_argument('--package', type=Path)
     parser.add_argument('--url')
     parser.add_argument('--latest', action='store_true')
+    parser.add_argument('--nightly', action='store_true')
     parser.add_argument('--sha256')
     parser.add_argument('--confirm-project')
     parser.add_argument('--no-safety-backup', action='store_true', help='Явное аварийное восстановление без копирования текущего повреждённого состояния')
@@ -547,6 +561,8 @@ def main():
     parser.add_argument('--resume', action='store_true')
     args = parser.parse_args()
     target = args.install_dir
+    if args.nightly and (args.command != 'update' or not args.latest):
+        parser.error('--nightly доступен только для update --latest.')
     if not target.is_absolute() or target == Path('/') or target.is_symlink() or not 1 <= args.port <= 65535:
         parser.error('Неверный каталог или порт.')
     if args.latest:
@@ -588,7 +604,14 @@ def main():
             elif args.command == 'backup':
                 ensure_idle(target); backup(target)
             elif args.command == 'update':
-                update(target, args.package, args.sha256)
+                if args.nightly:
+                    if not auto_idle(target):
+                        print('Во время скачивания появились активные задания. Обновление отложено до следующей ночи.')
+                        return 0
+                if args.nightly:
+                    update(target, args.package, args.sha256, nightly=True)
+                else:
+                    update(target, args.package, args.sha256)
             elif args.command == 'restore':
                 restore(target, args.package, args.sha256, args.confirm_project, not args.no_safety_backup)
             elif args.command == 'rollback':
@@ -610,5 +633,218 @@ def main():
         print('Операция прервана. Проверьте version; при незавершённой операции используйте rollback.', file=sys.stderr)
         return 130
 
+CONFIG = '.wristmind-auto-update.json'
+UNITS = Path('/etc/systemd/system')
+BUSY_CODE = """import asyncio
+from sqlalchemy import select, func
+from wristmind_server.database import SessionFactory
+from wristmind_server.db_models import Job
+async def check():
+ async with SessionFactory() as session:
+  count = await session.scalar(select(func.count()).select_from(Job).where(Job.status.in_(['queued','running'])))
+  print('BUSY' if count else 'IDLE')
+asyncio.run(check())
+"""
+
+
+def auto_validate_schedule(clock, zone):
+    if not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', clock):
+        raise ValueError('Время должно быть в формате ЧЧ:ММ, например 04:00.')
+    if not re.fullmatch(r'[A-Za-z0-9_+/-]+', zone) or zone.startswith('/') or '..' in zone:
+        raise ValueError('Укажите часовой пояс, например Europe/Moscow.')
+    try:
+        ZoneInfo(zone)
+    except (ValueError, ZoneInfoNotFoundError):
+        raise ValueError('Неизвестный часовой пояс. Используйте имя из timedatectl list-timezones.') from None
+    return f'*-*-* {clock}:00 {zone}'
+
+
+def auto_unit_name(target):
+    return 'wristmind-update-' + hashlib.sha256(str(target.resolve()).encode()).hexdigest()[:12]
+
+
+def auto_quote_unit(value):
+    if any(char in str(value) for char in '\n\r\x00'):
+        raise ValueError('Недопустимый путь.')
+    return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"'
+
+
+def auto_unit_files(target, clock, zone):
+    calendar = auto_validate_schedule(clock, zone)
+    script = target / 'selfhost/lifecycle.py'
+    service = f'''[Unit]
+Description=WristMind nightly verified update
+Wants=network-online.target
+After=network-online.target docker.service
+ConditionPathExists={auto_quote_unit(target / '.wristmind-install')[1:-1]}
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 {auto_quote_unit(script)} --auto-update run --install-dir {auto_quote_unit(target)}
+WorkingDirectory={auto_quote_unit(target)[1:-1]}
+TimeoutStartSec=2h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+'''
+    timer = f'''[Unit]
+Description=WristMind nightly update at {clock} ({zone})
+
+[Timer]
+OnCalendar={calendar}
+Persistent=false
+AccuracySec=1min
+Unit={auto_unit_name(target)}.service
+
+[Install]
+WantedBy=timers.target
+'''
+    return service, timer
+
+
+def auto_settings(target):
+    path = target / CONFIG
+    if path.is_symlink():
+        raise ValueError('Настройки автообновления не должны быть ссылкой.')
+    return json.loads(path.read_text()) if path.exists() else {'enabled': False, 'time': '04:00', 'timezone': 'Europe/Moscow'}
+
+
+def auto_default_zone():
+    path = Path('/etc/timezone')
+    if path.exists():
+        candidate = path.read_text().strip()
+        try:
+            auto_validate_schedule('04:00', candidate)
+            return candidate
+        except ValueError:
+            pass
+    try:
+        candidate = str(Path('/etc/localtime').resolve()).split('/zoneinfo/', 1)[1]
+        auto_validate_schedule('04:00', candidate)
+        return candidate
+    except (IndexError, ValueError):
+        return 'Etc/UTC'
+
+
+def auto_systemctl(*args):
+    subprocess.run(['systemctl', *args], check=True, timeout=30)
+
+
+def auto_configure(target, enabled, clock='04:00', zone='Europe/Moscow'):
+    state(target, False)  # Reject an absent/foreign/partial installation before touching systemd.
+    service, timer = auto_unit_files(target, clock, zone)
+    if os.geteuid() != 0:
+        args = [sys.executable, str(Path(__file__).resolve()), '--auto-update', 'enable' if enabled else 'disable',
+                '--install-dir', str(target), '--time', clock, '--timezone', zone]
+        subprocess.run(['sudo', *args], check=True)
+        return
+    if not Path('/run/systemd/system').exists():
+        raise ValueError('Для ночного автообновления нужен сервер с systemd.')
+    name = auto_unit_name(target)
+    with access.locked(target):
+        if enabled:
+            runtime = target / 'selfhost/lifecycle.py'
+            if runtime.is_symlink() or not runtime.is_file() or 'def auto_main(' not in runtime.read_text():
+                raise ValueError('Сначала обновите установку через меню 5 → 2, затем включите расписание.')
+            access.atomic(UNITS / (name + '.service'), service)
+            access.atomic(UNITS / (name + '.timer'), timer)
+            auto_systemctl('daemon-reload')
+            auto_systemctl('enable', '--now', name + '.timer')
+            auto_systemctl('restart', name + '.timer')
+        else:
+            auto_systemctl('disable', '--now', name + '.timer')
+        access.atomic(target / CONFIG, json.dumps({'enabled': enabled, 'time': clock, 'timezone': zone}, indent=2) + '\n')
+    auto_show(target)
+
+
+def auto_show(target):
+    data = auto_settings(target)
+    print('Ночное автообновление: ' + ('включено' if data['enabled'] else 'выключено'))
+    if data['enabled']:
+        print(f"Ежедневно в {data['time']} · {data['timezone']}")
+        print('Активные задания: обновление пропускается до следующей ночи.')
+        print('Пропущенное время не догоняется при дневном запуске сервера.')
+        name = auto_unit_name(target)
+        subprocess.run(['systemctl', 'list-timers', name + '.timer', '--no-pager'], check=False, timeout=10)
+        print('Логи: journalctl -u ' + name + '.service --no-pager')
+
+
+def auto_idle(target):
+    data, _ = state(target, False)
+    result = subprocess.run(command(target, data, 'exec', '-T', 'api', 'python', '-c', BUSY_CODE),
+        cwd=target, env=installer.docker_environment(), capture_output=True, text=True, timeout=20, check=True)
+    if result.stdout.strip() not in {'BUSY', 'IDLE'}:
+        raise ValueError('Не удалось проверить активные задания; обновление пропущено.')
+    return result.stdout.strip() == 'IDLE'
+
+
+def auto_run(target):
+    config = auto_settings(target)
+    if not config['enabled']:
+        print('Ночное автообновление выключено.')
+        return 0
+    # No downloads, backups or maintenance if a search/answer/ingestion is currently running.
+    with access.locked(target):
+        ensure_idle(target)
+        if not auto_idle(target):
+            print('Есть активные задания. Обновление отложено до следующей ночи.')
+            return 0
+    # The normal updater owns its own exclusive lock, checksum, mandatory backup and rollback.
+    return subprocess.run([sys.executable, str(target / 'selfhost/lifecycle.py'), 'update', '--latest',
+                           '--nightly', '--install-dir', str(target)], check=False).returncode
+
+
+def auto_menu(target):
+    while True:
+        print('\nНочные обновления WristMind')
+        auto_show(target)
+        print('1) Включить / изменить время\n2) Выключить\n0) Назад')
+        answer = input('Выберите пункт: ').strip()
+        if answer == '0':
+            return
+        if answer == '1':
+            data = auto_settings(target)
+            clock = input(f"Время [{data.get('time', '04:00')}]: ").strip() or data.get('time', '04:00')
+            zone = input(f"Ваш часовой пояс [{auto_default_zone()}], например Europe/Moscow: ").strip() or auto_default_zone()
+            auto_validate_schedule(clock, zone)
+            print(f'Каждую ночь в {clock} ({zone}): проверка выпуска, бэкап, обновление и проверка запуска.')
+            print('При ошибке — откат к прежней версии; при активных заданиях — пропуск до следующей ночи.')
+            if input('Включить? [y/N]: ').strip().lower() in {'y', 'yes', 'д', 'да'}:
+                auto_configure(target, True, clock, zone)
+        elif answer == '2':
+            data = auto_settings(target)
+            if data['enabled']:
+                auto_configure(target, False, data['time'], data['timezone'])
+            else:
+                print('Уже выключено.')
+
+
+def auto_main():
+    parser = argparse.ArgumentParser(description='Ночное автообновление только через терминал')
+    parser.add_argument('action', choices=['menu', 'enable', 'disable', 'status', 'run'])
+    parser.add_argument('--install-dir', type=Path, required=True)
+    parser.add_argument('--time', default='04:00')
+    parser.add_argument('--timezone', default='Europe/Moscow')
+    args = parser.parse_args(sys.argv[2:])
+    target = args.install_dir
+    if not target.is_absolute() or target == Path('/') or target.is_symlink():
+        parser.error('Неверный каталог установки.')
+    try:
+        if args.action == 'menu':
+            auto_menu(target)
+        elif args.action == 'status':
+            auto_show(target)
+        elif args.action == 'run':
+            return auto_run(target)
+        else:
+            auto_configure(target, args.action == 'enable', args.time, args.timezone)
+        return 0
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        print(str(error) if isinstance(error, ValueError) else 'Не удалось настроить/выполнить ночное обновление. Проверьте systemd и права.', file=sys.stderr)
+        return 1
+    except (EOFError, KeyboardInterrupt):
+        return 0
+
+
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(auto_main() if sys.argv[1:2] == ['--auto-update'] else main())

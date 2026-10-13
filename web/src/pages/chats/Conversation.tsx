@@ -1,3 +1,4 @@
+import { WristMindError } from '@/services/errors';
 import { useChatBase } from './useChatBase';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from '@/app/router';
@@ -224,7 +225,11 @@ export function Conversation({ chatId, onExternalStop, recoveryText, onOpenHisto
           research_mode: researchMode,
           signal: controller.signal,
         });
-      } catch {
+      } catch (error) {
+        if (error instanceof WristMindError && error.details?.messageAccepted) {
+          toast.error('Не удалось получить ответ', 'Сообщение уже отправлено. История обновится автоматически.');
+          return;
+        }
         toast.error('Не удалось получить ответ', 'Черновик сохранён. Попробуйте отправить сообщение ещё раз');
         return false;
       } finally {

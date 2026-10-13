@@ -98,6 +98,8 @@ export function Composer({
     if (sending.current || streaming) return;
     sending.current = true;
     setValue('');
+    // Clear before navigation/unmount: an effect may never run after sending.
+    try { if (draftKey) sessionStorage.removeItem(`wristmind.draft.${draftKey}`); } catch { /* optional storage */ }
     if (window.matchMedia('(max-width: 860px)').matches) textareaRef.current?.blur();
     else requestAnimationFrame(() => textareaRef.current?.focus());
     void Promise.resolve().then(() => onSend(text)).then(result => {

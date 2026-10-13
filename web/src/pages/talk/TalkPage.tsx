@@ -1,3 +1,4 @@
+import { WristMindError } from '@/services/errors';
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useLocation } from '@/app/router';
 import { PanelLeft, MessageSquarePlus, Settings2, WifiOff } from 'lucide-react';
@@ -44,7 +45,11 @@ export function TalkPage({ history = false }: { history?: boolean }) {
       const result = actions.sendMessage({ chat_id: chat.id, content: text, research_mode: research, signal: controller.signal });
       navigate(`/talk/${chat.id}`);
       await result;
-    } catch {
+    } catch (error) {
+      if (error instanceof WristMindError && error.details?.messageAccepted) {
+        toast.error('Не удалось получить ответ', 'Сообщение уже отправлено. История обновится автоматически.');
+        return;
+      }
       try { sessionStorage.setItem(`wristmind.draft.${createdId ?? 'talk-new'}`, text); } catch { /* optional */ }
       if (createdId) setRecovery({chatId:createdId,text});
       toast.error('Не удалось отправить сообщение', 'Текст сохранён в черновике. Проверьте соединение и повторите отправку.');

@@ -251,7 +251,8 @@ maintenance_menu() {
   ui_header 'Обновления и резервные копии'
   ui_section 'ВЕРСИИ'
   ui_item 1 'Версия'
-  ui_item 2 'Обновить автоматически'
+  ui_item 2 'Обновить сейчас'
+  ui_item 8 'Ночное автообновление'
   ui_section 'ДАННЫЕ'
   ui_item 3 'Бэкап' "$WM_GREEN"
   ui_item 4 'Восстановить бэкап' "$WM_AMBER"
@@ -267,6 +268,7 @@ maintenance_menu() {
   case $action in
     1) maintenance version;;
     2) maintenance update --latest;;
+    8) python3 "$WM_ROOT/selfhost/lifecycle.py" --auto-update menu --install-dir "$WM_INSTALL_DIR";;
     4) maintenance restore-menu;;
     7)
       read -r -p 'Путь к пакету: ' package || return 0
@@ -279,7 +281,7 @@ maintenance_menu() {
       read -r -p 'Имя проекта для подтверждения: ' project || return 0
       if [[ $action == 5 ]]; then maintenance rollback --confirm-project "$project"
       else maintenance remove --confirm-project "$project"; fi;;
-    0) return 0;; *) echo 'Выберите 0–7.'; continue;;
+    0) return 0;; *) echo 'Выберите 0–8.'; continue;;
   esac
   done
 }

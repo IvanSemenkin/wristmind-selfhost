@@ -41,12 +41,56 @@ test('server errors cannot be replaced by the previous successful answer', async
     assert.equal(finals,0);
   });
 });
-test('a prematurely closed stream is not marked complete', async () => {
+test('a prematurely closed stream waits for the accepted job and never resends', async () => {
+  let posts=0, polls=0;
   await withFetch(async (url,options) => {
-    if(options?.method==='POST') return json({id:'job'});
+    if(options?.method==='POST') {posts++; return json({id:'job'});}
     if(url.endsWith('/events')) return new Response('event: delta\ndata: {"text":"Partial"}\n\n');
-    return json({status:'running',result:{}});
-  }, async service => assert.rejects(service.chats.send(input), error=>error.code==='network'));
+    if(url.endsWith('/jobs/job')) return json(++polls===1 ? {status:'running',result:{}} : {status:'complete',result:{message_id:'current'}});
+    return json([message('current')]);
+  }, async service => {
+    assert.equal((await service.chats.send(input)).id,'current');
+    assert.equal(posts,1);
+    assert.equal(polls,2);
+  });
+});
+test('network failure after acceptance recovers the exact completed answer', async () => {
+  let posts=0;
+  await withFetch(async (url,options) => {
+    if(options?.method==='POST') {posts++;return json({id:'job'});}
+    if(url.endsWith('/events')) throw new TypeError('Network Error');
+    if(url.endsWith('/jobs/job')) return json({status:'complete',result:{message_id:'current'}});
+    return json([message('previous'),message('current')]);
+  }, async service => {assert.equal((await service.chats.send(input)).id,'current');assert.equal(posts,1);});
+});
+test('accepted provider failure must not restore a sent draft', async () => {
+  await withFetch(async (_url,options) => options?.method==='POST' ? json({id:'job'}) : new Response('event: error\ndata: {"detail":"Provider failed"}\n\n'),
+    async service => assert.rejects(service.chats.send(input),error=>error.details?.messageAccepted===true && error.code==='server'));
+});
+test('rejected submission remains eligible for draft recovery', async () => {
+  await withFetch(async()=>new Response('{"detail":"Unavailable"}',{status:400,headers:{'Content-Type':'application/json'}}),
+    async service=>assert.rejects(service.chats.send(input),error=>!error.details?.messageAccepted));
+});
+test('returning to a visible tab recovers a stalled stream without cancelling the job', async () => {
+  const browser=new EventTarget(),page=new EventTarget();page.visibilityState='visible';
+  const oldWindow=global.window,oldDocument=global.document;
+  global.window=Object.assign(browser,{setTimeout,clearTimeout,setInterval,clearInterval});global.document=page;
+  const opened=defer();let cancels=0;
+  try {
+    await withFetch(async(url,options)=> {
+      if(url.endsWith('/cancel')) {cancels++;return json({});}
+      if(options?.method==='POST') return json({id:'job'});
+      if(url.endsWith('/events')) return new Response(new ReadableStream({start(controller){
+        options.signal.addEventListener('abort',()=>controller.error(new DOMException('Aborted','AbortError')),{once:true});opened.resolve();
+      }}));
+      if(url.endsWith('/jobs/job')) return json({status:'complete',result:{message_id:'current'}});
+      return json([message('current')]);
+    },async service=>{
+      const result=service.chats.send(input);await opened.promise;
+      page.dispatchEvent(new Event('visibilitychange'));
+      assert.equal((await result).id,'current');assert.equal(cancels,0);
+    });
+  } finally {global.window=oldWindow;global.document=oldDocument;}
 });
 test('CRLF split across network chunks preserves all deltas and final id', async () => {
   await withFetch(async (url,options) => {
@@ -125,4 +169,16 @@ test('double submission does not start a second turn in the same chat', async ()
   service.chats.send=()=>{sends++;return pending.promise;};
   try {const first=store.sendMessage(input);await assert.rejects(store.sendMessage(input),error=>error.code==='conflict');assert.equal(sends,1);pending.resolve(message('new'));await first;}
   finally {store.dispose();}
+});
+test('Stop during recovery cancels the accepted job once and cleans up polling', async () => {
+  const controller=new AbortController();let cancels=0;
+  await withFetch(async(url,options)=>{
+    if(url.endsWith('/cancel')) {cancels++;return json({status:'cancelled'});}
+    if(options?.method==='POST') return json({id:'job'});
+    if(url.endsWith('/events')) throw new TypeError('Offline');
+    queueMicrotask(()=>controller.abort());return json({status:'running',result:{}});
+  },async service=>{
+    await assert.rejects(service.chats.send({...input,signal:controller.signal}),error=>error.code==='aborted');
+    assert.equal(cancels,1);
+  });
 });

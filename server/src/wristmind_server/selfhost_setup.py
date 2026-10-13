@@ -20,7 +20,7 @@ from .security import admin_device, current_device, hash_secret, issue_device_to
 from .selfhost_runtime import read_runtime
 
 router = APIRouter(prefix='/v1/selfhost', tags=['Self hosting'])
-SESSION_SECONDS = 12 * 60 * 60
+from .selfhost_sessions import (SESSION_SECONDS, browser_device_id, set_browser_cookie, set_session_cookie)
 _PASSWORD_SLOTS = threading.Semaphore(2)
 
 
@@ -63,16 +63,27 @@ def session_info(device):
 
 
 async def new_session(session, owner_id, request, response, settings):
-    device = Device(name='Веб-панель', kind='WEB', is_admin=True, user_id=owner_id, token_hash='pending',
-                    user_agent=request.headers.get('user-agent', '')[:300] or None)
-    session.add(device)
-    await session.flush()
+    # Called only after password/activation verification. Do not identify browsers by IP or UA.
+    previous_id = browser_device_id(request.cookies.get('wm_browser'), settings)
+    device = await session.get(Device, previous_id) if previous_id else None
+    if device is None and request.cookies.get('wm_session'):
+        device = await session.scalar(select(Device).where(
+            Device.token_hash == hash_secret(request.cookies['wm_session'], settings)))
+    web = await session.get(SelfHostWebSession, device.id) if device else None
+    if not (device and web and device.user_id == owner_id and device.kind == 'WEB'
+            and device.is_admin and device.removed_at is None):
+        device = Device(name='Веб-панель', kind='WEB', is_admin=True, user_id=owner_id, token_hash='pending')
+        session.add(device)
+        await session.flush()
+        web = SelfHostWebSession(device_id=device.id, expires_at=utcnow())
+        session.add(web)
+    device.revoked_at = None
+    device.user_agent = request.headers.get('user-agent', '')[:300] or None
     token = issue_device_token(device.id)
     device.token_hash = hash_secret(token, settings)
-    session.add(SelfHostWebSession(device_id=device.id, expires_at=utcnow() + timedelta(seconds=SESSION_SECONDS)))
-    response.set_cookie('wm_session', token, max_age=SESSION_SECONDS, httponly=True, samesite='strict',
-                        secure=request.url.scheme == 'https' or settings.public_base_url.startswith('https://'), path='/')
-    response.headers['Cache-Control'] = 'no-store'
+    web.expires_at = utcnow() + timedelta(seconds=SESSION_SECONDS)
+    set_session_cookie(response, token, request, settings)
+    set_browser_cookie(response, device.id, request, settings)
     return session_info(device)
 
 
@@ -131,19 +142,16 @@ async def login(payload: Login, request: Request, response: Response,
     if not owner or owner.deleted_at is not None:
         raise HTTPException(403, 'Доступ владельца отключён')
     admin.failed_attempts = 0; admin.locked_until = None
-    # Revoke the browser's previous login on replacement, never its paired watches.
-    old = request.cookies.get('wm_session')
-    if old:
-        previous = await session.scalar(select(Device).where(Device.token_hash == hash_secret(old, settings)))
-        if previous and await session.get(SelfHostWebSession, previous.id):
-            previous.revoked_at = utcnow()
     info = await new_session(session, admin.user_id, request, response, settings)
     await session.commit()
     return info
 
 
 @router.get('/session')
-async def read_session(device: Device = Depends(admin_device)):
+async def read_session(request: Request, response: Response, device: Device = Depends(admin_device),
+                       settings: Settings = Depends(get_settings)):
+    # Upgrade existing browsers without replacing their device or requiring another login.
+    set_browser_cookie(response, device.id, request, settings)
     return session_info(device)
 
 

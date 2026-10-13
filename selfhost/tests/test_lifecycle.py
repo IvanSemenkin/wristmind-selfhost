@@ -121,6 +121,24 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(lifecycle.read_journal(self.target)['phase'], 'ready')
         self.assertEqual(len(list((self.target / 'backups').glob('*.tar.gz'))), 1)
 
+    def test_nightly_final_busy_check_unpauses_without_stopping_writers(self):
+        package, checksum = self.package()
+        with patch.object(lifecycle, 'auto_idle', return_value=False), patch.object(lifecycle, 'pause') as pause:
+            lifecycle.update(self.target, package, checksum, nightly=True)
+            self.assertEqual([call.args[-1] for call in pause.call_args_list], [True, False])
+        self.assertEqual((self.target / '.env').read_bytes(), self.before)
+        self.assertFalse(any('stop' in call[0] for call in self.calls))
+        self.assertFalse((self.target / 'backups').exists())
+
+    def test_nightly_final_probe_error_unpauses_without_changing_data(self):
+        package, checksum = self.package()
+        with patch.object(lifecycle, 'auto_idle', side_effect=RuntimeError('probe failed')), patch.object(lifecycle, 'pause') as pause:
+            with self.assertRaises(RuntimeError):
+                lifecycle.update(self.target, package, checksum, nightly=True)
+            self.assertEqual([call.args[-1] for call in pause.call_args_list], [True, False])
+        self.assertEqual((self.target / '.env').read_bytes(), self.before)
+        self.assertFalse(any('stop' in call[0] for call in self.calls))
+
     def test_health_failure_automatically_restores_old_configuration_and_database(self):
         package, checksum = self.package()
         self.health.side_effect = [RuntimeError('bad new API'), None]

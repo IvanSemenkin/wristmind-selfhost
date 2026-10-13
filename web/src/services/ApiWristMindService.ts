@@ -306,7 +306,19 @@ export class ApiWristMindService implements WristMindService {
     const contentType = response.headers.get('content-type') ?? '';
     if (!response.ok) {
       const payload = contentType.includes('json') ? await response.json().catch(() => null) as { detail?: string } | null : null;
-      if (response.status === 401) this.onInvalidToken?.();
+      if (response.status === 401 && ['Invalid device token', 'Device token required'].includes(payload?.detail ?? '')) {
+        if (this.session.token) this.onInvalidToken?.();
+        else {
+          // A late 401 from an old request must not discard a newly established cookie session.
+          // Provider failures and a temporary inability to verify are not a logout.
+          try {
+            const current = await fetch(`${this.session.baseUrl.replace(/\/+$/, '')}/v1/selfhost/session`, {
+              cache: 'no-store', credentials: 'same-origin', signal: AbortSignal.timeout(10000),
+            });
+            if (current.status === 401) this.onInvalidToken?.();
+          } catch { /* Keep the session until the server confirms it is invalid. */ }
+        }
+      }
       throw apiError(response.status, payload?.detail ?? `Ошибка сервера ${response.status}`);
     }
     if (response.status === 204) return undefined as T;
@@ -413,6 +425,50 @@ export class ApiWristMindService implements WristMindService {
     send: async (input: SendMessageInput, handlers?: ChatStreamHandlers): Promise<Message> => this.sendMessage(input, handlers),
   };
 
+  /** Recover an accepted job without submitting another message or replaying deltas. */
+  private async recoverAnswer(jobId: string, input: SendMessageInput, handlers?: ChatStreamHandlers): Promise<Message> {
+    let attempt = 0;
+    while (!input.signal?.aborted) {
+      try {
+        const timeout = AbortSignal.timeout(15000);
+        const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
+        const job = await this.request<ApiJob>(`/v1/jobs/${encodeURIComponent(jobId)}`, { signal });
+        if (job.status === 'cancelled') throw new WristMindError('Генерация остановлена', { code: 'aborted' });
+        if (job.status === 'failed') throw new WristMindError(job.error ?? 'Не удалось сформировать ответ', { code: 'server' });
+        if (job.status === 'complete' && typeof job.result.message_id === 'string') {
+          const messages = await this.request<ApiMessage[]>(`/v1/chats/${encodeURIComponent(input.chat_id)}/messages`, { signal });
+          const final = messages.find(item => item.id === job.result.message_id && item.role === 'assistant');
+          if (final) {
+            const mapped = this.mapMessage(final);
+            handlers?.onFinal?.(mapped);
+            return mapped;
+          }
+        }
+      } catch (error) {
+        // Request timeouts are transport failures; only the caller's signal cancels work.
+        if (input.signal?.aborted) throw error;
+        if (!(error instanceof TypeError) && !(error instanceof WristMindError &&
+          (error.code === 'network' || error.code === 'aborted' || (error.status ?? 0) >= 500))) throw error;
+      }
+      await new Promise<void>(resolve => {
+        const finish = () => {
+          window.clearTimeout(timer);
+          window.removeEventListener('online', finish);
+          document.removeEventListener('visibilitychange', visible);
+          input.signal?.removeEventListener('abort', finish);
+          resolve();
+        };
+        const visible = () => { if (document.visibilityState !== 'hidden') finish(); };
+        const timer = window.setTimeout(finish, Math.min(10000, 2000 * 2 ** Math.min(attempt++, 3)));
+        window.addEventListener('online', finish);
+        document.addEventListener('visibilitychange', visible);
+        input.signal?.addEventListener('abort', finish, { once: true });
+        if (input.signal?.aborted) finish();
+      });
+    }
+    throw new WristMindError('Генерация остановлена', { code: 'aborted' });
+  }
+
   private async sendMessage(input: SendMessageInput, handlers?: ChatStreamHandlers): Promise<Message> {
     const aborted = () => new WristMindError('Генерация остановлена', { code: 'aborted' });
     if (input.signal?.aborted) throw aborted();
@@ -437,11 +493,15 @@ export class ApiWristMindService implements WristMindService {
     };
     input.signal?.addEventListener('abort', cancel, { once: true });
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    const transport = new AbortController();
+    const reconnect = () => { if (document.visibilityState !== 'hidden') transport.abort(); };
+    document.addEventListener('visibilitychange', reconnect);
+    window.addEventListener('online', reconnect);
     try {
       if (input.signal?.aborted) { cancel(); throw aborted(); }
       const response = await fetch(`${this.session.baseUrl.replace(/\/+$/, '')}/v1/jobs/${encodeURIComponent(job.id)}/events`, {
         headers: { ...(this.session.token ? { Authorization: `Bearer ${this.session.token}` } : {}), Accept: 'text/event-stream' },
-        signal: input.signal,
+        signal: input.signal ? AbortSignal.any([input.signal, transport.signal]) : transport.signal,
       });
       if (!response.ok || !response.body) throw apiError(response.status, 'Не удалось открыть поток ответа');
       reader = response.body.getReader();
@@ -497,8 +557,24 @@ export class ApiWristMindService implements WristMindService {
       return final;
     } catch (error) {
       if (input.signal?.aborted) { cancel(); await cancellation; throw aborted(); }
-      throw error;
+      try {
+        if (error instanceof TypeError || transport.signal.aborted ||
+          (error instanceof DOMException && error.name === 'AbortError') ||
+          (error instanceof WristMindError && (error.code === 'network' || (error.status ?? 0) >= 500))) {
+          await reader?.cancel().catch(() => {});
+          return await this.recoverAnswer(job.id, input, handlers);
+        }
+        throw error;
+      } catch (failure) {
+        if (input.signal?.aborted) { cancel(); await cancellation; throw aborted(); }
+        throw new WristMindError(failure instanceof Error ? failure.message : 'Не удалось получить ответ', {
+          code: failure instanceof WristMindError ? failure.code : 'unknown',
+          details: { messageAccepted: true }, cause: failure,
+        });
+      }
     } finally {
+      document.removeEventListener('visibilitychange', reconnect);
+      window.removeEventListener('online', reconnect);
       input.signal?.removeEventListener('abort', cancel);
       await reader?.cancel().catch(() => {});
       reader?.releaseLock();

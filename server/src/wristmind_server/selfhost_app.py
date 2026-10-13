@@ -9,6 +9,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from .config import get_settings
 from .main import app
 from .selfhost_setup import router
+from .selfhost_sessions import set_session_cookie
 from .selfhost_maintenance import MaintenanceBoundary
 from .web_host import mount_panel
 
@@ -29,6 +30,9 @@ async def selfhost_boundary(request, call_next):
         if request.headers.get('x-wristmind-csrf') != '1' or (origin and origin not in allowed) or request.headers.get('sec-fetch-site') == 'cross-site':
             return JSONResponse({'detail': 'Проверка запроса не пройдена'}, status_code=403)
     response = await call_next(request)
+    renewed = getattr(request.state, 'renew_web_session', None)
+    if renewed and response.status_code < 400 and path != '/v1/selfhost/logout':
+        set_session_cookie(response, renewed, request, get_settings())
     if path.startswith('/v1/selfhost/'):
         response.headers['Cache-Control'] = 'no-store'
     return response

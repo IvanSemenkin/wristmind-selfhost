@@ -69,7 +69,7 @@ invalid = client.post('/v1/selfhost/admin', headers={'X-WristMind-Setup':'test-a
 assert invalid.status_code == 422 and 'secret' not in invalid.text
 response = create()
 cookie = response.headers['set-cookie'].lower()
-assert 'httponly' in cookie and 'samesite=strict' in cookie and 'max-age=43200' in cookie
+assert 'httponly' in cookie and 'samesite=strict' in cookie and 'max-age=2592000' in cookie
 assert client.get('/v1/selfhost/session').status_code == 200
 assert client.get('/v1/me').json()['is_admin']
 assert client.post('/v1/selfhost/admin', headers={'X-WristMind-Setup':'test-activation'}, json=payload).status_code == 409
@@ -108,6 +108,59 @@ async def expire():
 asyncio.run(expire())
 assert client.get('/v1/selfhost/session').status_code == 401
 ''')
+
+    def test_browser_identity_reuses_device_after_logout_and_cookie_expiry(self):
+        self.run_case("""
+first = create().json()['deviceId']
+browser = client.cookies.get('wm_browser')
+assert browser and browser != client.cookies.get('wm_session')
+payload = {'login':'owner','password':'test-password-strong'}
+assert client.post('/v1/selfhost/login', json=payload).json()['deviceId'] == first
+assert client.post('/v1/selfhost/logout', json={}).status_code == 204
+assert client.get('/v1/me').status_code == 401
+assert client.cookies.get('wm_browser') == browser
+assert client.post('/v1/selfhost/login', json=payload).json()['deviceId'] == first
+client.cookies.delete('wm_session')  # Browser has expired its authentication cookie.
+assert client.get('/v1/me').status_code == 401  # Identity cookie cannot authenticate.
+assert client.post('/v1/selfhost/login', json=payload).json()['deviceId'] == first
+async def count():
+    async with SessionFactory() as s:
+        assert len((await s.scalars(select(Device))).all()) == 1
+asyncio.run(count())
+# A genuinely separate browser creates its own panel, even with the same user agent/IP.
+client.cookies.clear()
+second = client.post('/v1/selfhost/login', json=payload).json()['deviceId']
+assert second != first
+client.cookies.clear()
+client.cookies.set('wm_browser', browser + 'tampered')
+third = client.post('/v1/selfhost/login', json=payload).json()['deviceId']
+assert third not in {first, second}
+""")
+
+    def test_active_session_renewal_and_old_browser_upgrade(self):
+        self.run_case("""
+first = create().json()['deviceId']
+old_token = client.cookies.get('wm_session')
+client.cookies.delete('wm_browser')
+async def shorten():
+    async with SessionFactory() as s:
+        web = await s.get(SelfHostWebSession, first)
+        web.expires_at = utcnow() + timedelta(hours=1)
+        await s.commit()
+asyncio.run(shorten())
+response = client.get('/v1/selfhost/session')
+assert response.status_code == 200 and response.json()['deviceId'] == first
+assert 'max-age=2592000' in response.headers['set-cookie'].lower()
+assert client.cookies.get('wm_session') == old_token
+assert client.cookies.get('wm_browser')
+async def verify():
+    async with SessionFactory() as s:
+        web = await s.get(SelfHostWebSession, first)
+        assert web.expires_at.replace(tzinfo=__import__('datetime').timezone.utc) > utcnow() + timedelta(days=29)
+asyncio.run(verify())
+# Routine requests within the same day don't keep rewriting the cookie.
+assert 'set-cookie' not in client.get('/v1/me').headers
+""")
 
     def test_csrf_and_foreign_origin_fail_without_mutating(self):
         self.run_case('''
