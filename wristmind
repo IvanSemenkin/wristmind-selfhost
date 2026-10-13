@@ -252,14 +252,14 @@ maintenance_menu() {
   ui_section 'ВЕРСИИ'
   ui_item 1 'Версия'
   ui_item 2 'Обновить сейчас'
-  ui_item 8 'Ночное автообновление'
+  ui_item 3 'Ночное автообновление'
   ui_section 'ДАННЫЕ'
-  ui_item 3 'Бэкап' "$WM_GREEN"
-  ui_item 4 'Восстановить бэкап' "$WM_AMBER"
-  ui_item 5 'Откат' "$WM_AMBER"
-  ui_item 6 'Удалить контейнеры (данные сохранятся)' "$WM_RED"
+  ui_item 4 'Бэкап' "$WM_GREEN"
+  ui_item 5 'Восстановить бэкап' "$WM_AMBER"
+  ui_item 6 'Откат' "$WM_AMBER"
+  ui_item 7 'Удалить контейнеры (данные сохранятся)' "$WM_RED"
   ui_section 'УСТАНОВКА ИЗ ПАКЕТА'
-  ui_item 7 'Установить из готового пакета'
+  ui_item 8 'Установить из готового пакета'
   printf '\n'; ui_rule
   ui_item 0 'Назад' "$WM_DIM"
   ui_prompt 'Выберите пункт: '; read -r action || return 0
@@ -268,18 +268,18 @@ maintenance_menu() {
   case $action in
     1) maintenance version;;
     2) maintenance update --latest;;
-    8) python3 "$WM_ROOT/selfhost/lifecycle.py" --auto-update menu --install-dir "$WM_INSTALL_DIR";;
-    4) maintenance restore-menu;;
-    7)
+    3) python3 "$WM_ROOT/selfhost/lifecycle.py" --auto-update menu --install-dir "$WM_INSTALL_DIR";;
+    5) maintenance restore-menu;;
+    8)
       read -r -p 'Путь к пакету: ' package || return 0
       read -r -p 'SHA256 из доверенного источника: ' checksum || return 0
       if [[ $(state) == incomplete ]]; then WM_RESUME=true; fi
       maintenance install-release --package "$package" --sha256 "$checksum";;
-    3) maintenance backup;;
-    5|6)
+    4) maintenance backup;;
+    6|7)
       maintenance version || return $?
       read -r -p 'Имя проекта для подтверждения: ' project || return 0
-      if [[ $action == 5 ]]; then maintenance rollback --confirm-project "$project"
+      if [[ $action == 6 ]]; then maintenance rollback --confirm-project "$project"
       else maintenance remove --confirm-project "$project"; fi;;
     0) return 0;; *) echo 'Выберите 0–8.'; continue;;
   esac
